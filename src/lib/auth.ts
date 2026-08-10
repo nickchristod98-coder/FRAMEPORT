@@ -29,10 +29,12 @@ export function mapUser(user: User | null | undefined): SessionUser | null {
 }
 
 export async function signUp(email: string, password: string, name: string) {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const { data, error } = await supabase.auth.signUp({
     email: email.trim(),
     password,
     options: {
+      emailRedirectTo: origin ? `${origin}/auth/callback` : undefined,
       data: {
         full_name: name.trim(),
         name: name.trim()
