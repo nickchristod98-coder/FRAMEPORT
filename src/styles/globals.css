@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#__next {
+  height: 100%;
+}
+
+body {
+  @apply antialiased;
+  background: #000;
+  color: #fff;
+  font-family: Syne, ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-display {
+  font-family: 'Instrument Serif', Georgia, serif;
+}
+
+.container {
+  @apply mx-auto max-w-6xl px-4;
+}
+
+/* Soft, out-of-focus color fields */
+.ambient-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+.ambient-blob-a {
+  width: 55vw;
+  height: 55vw;
+  max-width: 720px;
+  max-height: 720px;
+  top: -10%;
+  left: -8%;
+  background: radial-gradient(circle, #6b4f3a 0%, transparent 70%);
+  animation: drift-a 22s ease-in-out infinite alternate;
+}
+
+.ambient-blob-b {
+  width: 50vw;
+  height: 50vw;
+  max-width: 640px;
+  max-height: 640px;
+  bottom: -15%;
+  right: -10%;
+  background: radial-gradient(circle, #2a3f4f 0%, transparent 70%);
+  animation: drift-b 28s ease-in-out infinite alternate;
+}
+
+.ambient-blob-c {
+  width: 40vw;
+  height: 40vw;
+  max-width: 520px;
+  max-height: 520px;
+  top: 35%;
+  left: 40%;
+  background: radial-gradient(circle, #3d2a3a 0%, transparent 70%);
+  animation: drift-c 18s ease-in-out infinite alternate;
+}
+
+@keyframes drift-a {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    transform: translate(12%, 18%) scale(1.15);
+  }
+}
+
+@keyframes drift-b {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    transform: translate(-14%, -10%) scale(1.2);
+  }
+}
+
+@keyframes drift-c {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    transform: translate(-8%, 12%) scale(1.1);
+  }
+}
+
+.welcome-fade-in {
+  animation: rise-in 1s ease-out both;
+}
+
+.welcome-fade-in-delay {
+  animation: rise-in 1.15s ease-out 0.12s both;
+}
+
+.welcome-fade-in-late {
+  animation: rise-in 1.2s ease-out 0.35s both;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-blob,
+  .welcome-fade-in,
+  .welcome-fade-in-delay,
+  .welcome-fade-in-late {
+    animation: none !important;
+  }
+}
