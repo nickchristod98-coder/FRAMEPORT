@@ -12,12 +12,14 @@ type MediaItem = {
 function getClientToken(publicId: string) {
   try {
     const key = `lux_client_token_${publicId}`;
-    let t = localStorage.getItem(key);
-    if (!t) {
-      t = (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : Math.random().toString(36).slice(2);
-      localStorage.setItem(key, t);
-    }
-    return t;
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const created =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    localStorage.setItem(key, created);
+    return created;
   } catch {
     return 'guest';
   }

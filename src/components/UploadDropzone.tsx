@@ -59,7 +59,7 @@ export default function UploadDropzone({ projectId }: { projectId: string | null
         // Use XMLHttpRequest directly to get byte-level progress events.
         // Build upload URL for Supabase Storage (use upsert query param).
         const uploadUrl =
-          `${process.env.NEXT_PUBLIC_SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/${encodeURIComponent(
+          `${(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '')}/storage/v1/object/${encodeURIComponent(
             bucket
           )}/${encodeURIComponent(storagePath)}?upsert=true`;
 
@@ -127,12 +127,12 @@ export default function UploadDropzone({ projectId }: { projectId: string | null
         }
         const media = json.media;
         const publicUrl = media?.public_url || null;
-        uploaded.push({ name: file.name, path: data.path, size: file.size, mimeType: file.type });
-        setResults((r) => [...r, { name: file.name, path: data.path, size: file.size, mimeType: file.type }]);
+        uploaded.push({ name: file.name, path: storagePath, size: file.size, mimeType: file.type });
+        setResults((r) => [...r, { name: file.name, path: storagePath, size: file.size, mimeType: file.type }]);
         setCompletedFiles((c) => c + 1);
         // if available, update last entry with public url
         if (publicUrl) {
-          setResults((r) => r.map((x) => (x.path === data.path ? { ...x, mimeType: x.mimeType } : x)));
+          setResults((r) => r.map((x) => (x.path === storagePath ? { ...x, mimeType: x.mimeType } : x)));
         }
       }
       setUploading(false);

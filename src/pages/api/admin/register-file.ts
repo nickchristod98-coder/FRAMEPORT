@@ -15,11 +15,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Try to construct a public URL for the uploaded file (if bucket/public policy allows)
     let publicUrl: string | null = null;
     try {
-      const { data: pubData, error: pubErr } = await supabaseAdmin.storage
-        .from(storageBucket)
-        .getPublicUrl(storagePath);
-      if (!pubErr && pubData && (pubData as any).publicUrl) {
-        publicUrl = (pubData as any).publicUrl;
+      const { data: pubData } = supabaseAdmin.storage.from(storageBucket).getPublicUrl(storagePath);
+      if (pubData?.publicUrl) {
+        publicUrl = pubData.publicUrl;
       }
     } catch (e) {
       // ignore
