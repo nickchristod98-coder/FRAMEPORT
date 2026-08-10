@@ -66,6 +66,7 @@ alter table public.fp_board_media add column if not exists mime_type text;
 alter table public.fp_board_media add column if not exists storage_path text;
 alter table public.fp_board_media add column if not exists sort_order int default 0;
 alter table public.fp_board_media add column if not exists size bigint;
+alter table public.fp_board_media add column if not exists public_url text;
 
 -- Ensure board_id is bigint even if table existed without FK
 do $$

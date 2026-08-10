@@ -30,9 +30,8 @@ export type Board = {
   heroFramePath?: string | null;
 };
 
-const BUCKET = 'vision-board-media';
-/** Permanent public assets for mood frames / published stills */
-const ASSETS_BUCKET = 'board-assets';
+/** Single public bucket for mood frames, images, and project videos */
+const BUCKET = 'board-assets';
 
 export function isLocalMediaUrl(url: string | null | undefined): boolean {
   if (!url) return false;
@@ -250,18 +249,30 @@ function publicUrl(path: string | null | undefined, bucket: string = BUCKET): st
 }
 
 /**
- * Prefer a signed URL (works for private buckets). Falls back to a validated public URL.
+ * Permanent public URL for an object in board-assets (never signed / never blob).
+ */
+export function getBoardAssetPublicUrl(path: string | null | undefined): string | null {
+  return publicUrl(path, BUCKET);
+}
+
+/**
+ * Resolve a playable URL for board media. Prefers permanent public board-assets URLs
+ * so published boards keep working across devices (signed URLs expire).
  */
 export async function resolveStorageUrl(
   path: string | null | undefined,
-  expiresInSeconds = 60 * 60,
+  _expiresInSeconds = 60 * 60,
   bucket: string = BUCKET
 ): Promise<string | null> {
   if (!path || typeof path !== 'string' || !path.trim()) return null;
   const clean = path.trim();
 
+  const pub = publicUrl(clean, bucket);
+  if (pub) return pub;
+
+  // Fallback for private buckets / misconfigured public access
   try {
-    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(clean, expiresInSeconds);
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(clean, _expiresInSeconds);
     if (error) {
       console.error('[boards] createSignedUrl error', { path: clean, bucket, error });
     } else if (isValidHttpUrl(data?.signedUrl)) {
@@ -271,8 +282,6 @@ export async function resolveStorageUrl(
     console.error('[boards] createSignedUrl threw', { path: clean, bucket, err });
   }
 
-  const pub = publicUrl(clean, bucket);
-  if (pub) return pub;
   console.warn('[boards] resolveStorageUrl could not build a valid URL for', clean, bucket);
   return null;
 }
@@ -378,14 +387,23 @@ export async function getBoard(id: string): Promise<Board | null> {
   throwIfError(mediaErr, 'getBoard.media');
 
   const videos: BoardVideo[] = await Promise.all(
-    (mediaRows || []).map(async (m: any) => ({
-      id: m.id,
-      name: m.filename,
-      mimeType: m.mime_type || '',
-      storagePath: m.storage_path,
-      sortOrder: m.sort_order,
-      url: (await resolveStorageUrl(m.storage_path)) || ''
-    }))
+    (mediaRows || []).map(async (m: any) => {
+      const storedPublic =
+        typeof m.public_url === 'string' && isValidHttpUrl(m.public_url) ? m.public_url.split('?')[0] : null;
+      const url =
+        storedPublic ||
+        getBoardAssetPublicUrl(m.storage_path) ||
+        (await resolveStorageUrl(m.storage_path)) ||
+        '';
+      return {
+        id: m.id,
+        name: m.filename,
+        mimeType: m.mime_type || '',
+        storagePath: m.storage_path,
+        sortOrder: m.sort_order,
+        url
+      };
+    })
   );
 
   const heroFrameUrl = await resolveHeroFrameDisplayUrl(row.hero_frame_path);
@@ -482,22 +500,38 @@ export async function addVideoToBoard(
     await uploadFileWithProgress(storagePath, file, onProgress, signal);
     if (signal?.aborted) throw new UploadCancelledError();
 
-    const { data: row, error } = await supabase
+    const publicMediaUrl = getBoardAssetPublicUrl(storagePath);
+    if (!publicMediaUrl) {
+      throw new Error(
+        `Uploaded to ${BUCKET} but could not resolve a public URL. Ensure the bucket exists and is public.`
+      );
+    }
+
+    const baseRow = {
+      id: mediaId,
+      board_id: boardId,
+      creator_id: userId,
+      filename: file.name,
+      mime_type: file.type || 'application/octet-stream',
+      storage_path: storagePath,
+      sort_order: count || 0,
+      size: file.size
+    };
+
+    let { data: row, error } = await supabase
       .from('fp_board_media')
-      .insert([
-        {
-          id: mediaId,
-          board_id: boardId,
-          creator_id: userId,
-          filename: file.name,
-          mime_type: file.type || 'application/octet-stream',
-          storage_path: storagePath,
-          sort_order: count || 0,
-          size: file.size
-        }
-      ])
+      .insert([{ ...baseRow, public_url: publicMediaUrl }])
       .select('*')
       .single();
+
+    // Older schemas may not have public_url yet — retry without it
+    if (error && /public_url|schema cache|Could not find/i.test(error.message || '')) {
+      ({ data: row, error } = await supabase
+        .from('fp_board_media')
+        .insert([baseRow])
+        .select('*')
+        .single());
+    }
     throwIfError(error, 'addVideoToBoard.insert');
 
     return {
@@ -506,7 +540,7 @@ export async function addVideoToBoard(
       mimeType: row.mime_type,
       storagePath: row.storage_path,
       sortOrder: row.sort_order,
-      url: (await resolveStorageUrl(row.storage_path)) || ''
+      url: (typeof row.public_url === 'string' && row.public_url) || publicMediaUrl
     };
   } catch (err) {
     if (err instanceof UploadCancelledError || (err as any)?.name === 'UploadCancelledError') {
@@ -711,8 +745,7 @@ async function normalizeHeroImageBlob(input: Blob): Promise<Blob> {
 }
 
 /**
- * Resolve a permanent public mood-frame URL (never blob:/data:).
- * Tries board-assets first, then legacy vision-board-media.
+ * Resolve a permanent public mood-frame URL from board-assets (never blob:/data:).
  */
 export async function resolveHeroFrameDisplayUrl(
   path: string | null | undefined
@@ -720,65 +753,42 @@ export async function resolveHeroFrameDisplayUrl(
   if (!path || !path.trim()) return null;
   const clean = path.trim();
 
-  async function ensurePublicFromBucket(bucket: string, raw: Blob): Promise<string | null> {
-    const normalized = await normalizeHeroImageBlob(raw);
-    const rawHead = new Uint8Array(await raw.slice(0, 4).arrayBuffer());
-    const needsRepair = !isJpegBinary(rawHead);
-    if (needsRepair) {
-      try {
-        await supabase.storage.from(bucket).upload(clean, normalized, {
-          upsert: true,
-          contentType: normalized.type || 'image/jpeg',
-          cacheControl: '3600'
-        });
-        console.log('[boards] repaired hero frame object at', bucket, clean);
-      } catch (repairErr) {
-        console.error('[boards] hero repair upload failed', repairErr);
-      }
-    }
-    return withCacheBust(publicUrl(clean, bucket));
-  }
-
-  // Fast path: public URL already works
-  for (const bucket of [ASSETS_BUCKET, BUCKET]) {
-    const pub = publicUrl(clean, bucket);
-    if (!pub) continue;
+  const pub = publicUrl(clean, BUCKET);
+  if (pub) {
     try {
       const head = await fetch(pub, { method: 'HEAD' });
       if (head.ok) return withCacheBust(pub);
     } catch {
-      // continue — try download/repair
+      // fall through to download/repair
     }
   }
 
-  for (const bucket of [ASSETS_BUCKET, BUCKET]) {
-    try {
-      const { data, error } = await supabase.storage.from(bucket).download(clean);
-      if (error || !data) continue;
-      const url = await ensurePublicFromBucket(bucket, data);
-      if (url) return url;
-    } catch (err) {
-      console.error('[boards] resolveHeroFrameDisplayUrl download threw', { bucket, err });
-    }
-  }
-
-  // Last resort: migrate legacy object into board-assets if we can download from media bucket
   try {
-    const { data } = await supabase.storage.from(BUCKET).download(clean);
-    if (data) {
-      const normalized = await normalizeHeroImageBlob(data);
-      await supabase.storage.from(ASSETS_BUCKET).upload(clean, normalized, {
-        upsert: true,
-        contentType: 'image/jpeg',
-        cacheControl: '3600'
-      });
-      return withCacheBust(publicUrl(clean, ASSETS_BUCKET));
+    const { data, error } = await supabase.storage.from(BUCKET).download(clean);
+    if (error || !data) {
+      console.error('[boards] resolveHeroFrameDisplayUrl download failed', { error, path: clean });
+      return pub ? withCacheBust(pub) : null;
     }
-  } catch (err) {
-    console.error('[boards] hero migrate to board-assets failed', err);
-  }
 
-  return null;
+    const normalized = await normalizeHeroImageBlob(data);
+    const rawHead = new Uint8Array(await data.slice(0, 4).arrayBuffer());
+    if (!isJpegBinary(rawHead)) {
+      try {
+        await supabase.storage.from(BUCKET).upload(clean, normalized, {
+          upsert: true,
+          contentType: normalized.type || 'image/jpeg',
+          cacheControl: '3600'
+        });
+        console.log('[boards] repaired hero frame object at', BUCKET, clean);
+      } catch (repairErr) {
+        console.error('[boards] hero repair upload failed', repairErr);
+      }
+    }
+    return withCacheBust(publicUrl(clean, BUCKET));
+  } catch (err) {
+    console.error('[boards] resolveHeroFrameDisplayUrl threw', err);
+    return pub ? withCacheBust(pub) : null;
+  }
 }
 
 /**
@@ -809,16 +819,16 @@ export async function uploadBoardAsset(
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const path = `${userId}/${boardId}/${safeName}`;
 
-  const { error: uploadErr } = await supabase.storage.from(ASSETS_BUCKET).upload(path, blob, {
+  const { error: uploadErr } = await supabase.storage.from(BUCKET).upload(path, blob, {
     upsert: true,
     contentType: blob.type || 'image/jpeg',
     cacheControl: '3600'
   });
   throwIfError(uploadErr, 'uploadBoardAsset');
 
-  const publicUrlValue = publicUrl(path, ASSETS_BUCKET);
+  const publicUrlValue = publicUrl(path, BUCKET);
   if (!publicUrlValue) {
-    throw new Error('Uploaded to board-assets but could not resolve a public URL.');
+    throw new Error(`Uploaded to ${BUCKET} but could not resolve a public URL.`);
   }
   return { path, publicUrl: publicUrlValue };
 }
@@ -915,10 +925,8 @@ export async function getBoardMediaBlob(boardId: string, videoId: string): Promi
 export async function getHeroFrameBlob(boardId: string): Promise<Blob | null> {
   const board = await getBoard(boardId);
   if (board?.heroFramePath) {
-    for (const bucket of [ASSETS_BUCKET, BUCKET]) {
-      const { data, error } = await supabase.storage.from(bucket).download(board.heroFramePath);
-      if (!error && data) return normalizeHeroImageBlob(data);
-    }
+    const { data, error } = await supabase.storage.from(BUCKET).download(board.heroFramePath);
+    if (!error && data) return normalizeHeroImageBlob(data);
   }
   if (board?.heroFrameUrl && !isLocalMediaUrl(board.heroFrameUrl)) {
     try {

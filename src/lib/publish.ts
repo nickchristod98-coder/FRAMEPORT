@@ -3,6 +3,7 @@ import {
   Board,
   ensureBoardPublicId,
   getBoard,
+  getBoardAssetPublicUrl,
   getBoardMediaBlob,
   getHeroFrameBlob,
   isLocalMediaUrl,
@@ -45,9 +46,11 @@ function isPublicHttpUrl(url: string | null | undefined): url is string {
  * (never blob: or data: which only work on the creating device).
  */
 async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
-  // 1) Prefer path → public URL from board-assets / legacy media bucket
+  // 1) Prefer path → public URL from board-assets
   if (board.heroFramePath) {
-    const fromPath = await resolveHeroFrameDisplayUrl(board.heroFramePath);
+    const fromPath =
+      (await resolveHeroFrameDisplayUrl(board.heroFramePath)) ||
+      getBoardAssetPublicUrl(board.heroFramePath);
     if (isPublicHttpUrl(fromPath) && !isLocalMediaUrl(fromPath)) {
       return fromPath.split('?')[0]; // stable URL without cache-bust for publish payload
     }
@@ -78,13 +81,21 @@ async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
 
 async function resolvePublishedMediaUrl(
   boardId: string,
-  media: { id: string; url: string; name: string; mimeType: string }
+  media: { id: string; url: string; name: string; mimeType: string; storagePath?: string }
 ): Promise<string | null> {
+  // 1) Prefer permanent public URL from board-assets path
+  if (media.storagePath) {
+    const fromPath = getBoardAssetPublicUrl(media.storagePath);
+    if (fromPath) return fromPath;
+  }
+
+  // 2) Already a stable http(s) public URL (not blob/data, ideally not a signed token URL)
   if (isPublicHttpUrl(media.url) && !isLocalMediaUrl(media.url)) {
+    // Drop query params (cache-bust / short-lived signed tokens)
     return media.url.split('?')[0];
   }
 
-  if (isLocalMediaUrl(media.url)) {
+  if (media.url && isLocalMediaUrl(media.url)) {
     const uploaded = await uploadBoardAsset(
       boardId,
       media.url,

@@ -319,7 +319,7 @@ export default function BoardWorkspacePage() {
       }
     } catch (err: any) {
       console.error('[board] upload batch failed', err);
-      setUploadError(err?.message || 'Upload failed. Check Supabase Storage bucket `vision-board-media` and RLS policies.');
+      setUploadError(err?.message || 'Upload failed. Check Supabase Storage bucket `board-assets` and RLS policies.');
     } finally {
       setAdding(false);
       uploadControllersRef.current.clear();

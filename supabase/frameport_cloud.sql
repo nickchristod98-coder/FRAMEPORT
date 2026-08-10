@@ -1,8 +1,7 @@
 -- FramePort cloud schema (run in Supabase SQL editor)
 -- Matches live project: vision_boards.id is BIGINT, ownership column is creator_id
--- Requires: Auth enabled, Storage buckets:
---   - `vision-board-media` (videos / project files; public read recommended)
---   - `board-assets` (hero frames / published stills; public read required)
+-- Requires: Auth enabled, Storage bucket:
+--   - `board-assets` (public) — mood frames, images, and project file videos
 
 create extension if not exists "pgcrypto";
 
@@ -32,6 +31,7 @@ create table if not exists public.fp_board_media (
   filename text not null,
   mime_type text,
   storage_path text not null,
+  public_url text,
   sort_order int not null default 0,
   size bigint,
   created_at timestamptz default now()
@@ -101,32 +101,15 @@ drop policy if exists "published_boards_auth_update" on public.published_boards;
 create policy "published_boards_auth_update" on public.published_boards
   for update using (auth.role() = 'authenticated');
 
-drop policy if exists "boards_storage_select" on storage.objects;
-create policy "boards_storage_select" on storage.objects
-  for select using (bucket_id = 'vision-board-media');
-
-drop policy if exists "boards_storage_insert" on storage.objects;
-create policy "boards_storage_insert" on storage.objects
-  for insert with check (
-    bucket_id = 'vision-board-media' and auth.role() = 'authenticated'
-  );
-
-drop policy if exists "boards_storage_update" on storage.objects;
-create policy "boards_storage_update" on storage.objects
-  for update using (
-    bucket_id = 'vision-board-media' and auth.role() = 'authenticated'
-  );
-
-drop policy if exists "boards_storage_delete" on storage.objects;
-create policy "boards_storage_delete" on storage.objects
-  for delete using (
-    bucket_id = 'vision-board-media' and auth.role() = 'authenticated'
-  );
-
--- board-assets: public hero / mood frames for published boards
+-- board-assets: single public bucket for mood frames, images, and project videos
 insert into storage.buckets (id, name, public)
 values ('board-assets', 'board-assets', true)
 on conflict (id) do update set public = true;
+
+drop policy if exists "boards_storage_select" on storage.objects;
+drop policy if exists "boards_storage_insert" on storage.objects;
+drop policy if exists "boards_storage_update" on storage.objects;
+drop policy if exists "boards_storage_delete" on storage.objects;
 
 drop policy if exists "board_assets_storage_select" on storage.objects;
 create policy "board_assets_storage_select" on storage.objects
@@ -149,3 +132,5 @@ create policy "board_assets_storage_delete" on storage.objects
   for delete using (
     bucket_id = 'board-assets' and auth.role() = 'authenticated'
   );
+
+alter table public.fp_board_media add column if not exists public_url text;

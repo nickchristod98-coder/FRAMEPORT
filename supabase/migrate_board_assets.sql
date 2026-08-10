@@ -1,4 +1,4 @@
--- Create public board-assets bucket for hero / mood frames.
+-- Create public board-assets bucket for mood frames, images, and project videos.
 -- Run in Supabase SQL editor if the bucket does not already exist.
 
 insert into storage.buckets (id, name, public)
@@ -26,3 +26,6 @@ create policy "board_assets_storage_delete" on storage.objects
   for delete using (
     bucket_id = 'board-assets' and auth.role() = 'authenticated'
   );
+
+-- Persist permanent public URLs alongside storage paths
+alter table public.fp_board_media add column if not exists public_url text;
