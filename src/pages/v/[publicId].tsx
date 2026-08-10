@@ -3,7 +3,11 @@ import { useEffect, useMemo, useState } from 'react';
 import AmbientBackground from '../../components/AmbientBackground';
 import ProjectMediaGallery from '../../components/ProjectMediaGallery';
 import { formatBytes } from '../../lib/boards';
-import { formatUploadDate } from '../../lib/mediaUrls';
+import {
+  formatUploadDate,
+  isImageMime,
+  isVideoMime
+} from '../../lib/mediaUrls';
 import { getLocalPublished, PublishedPayload } from '../../lib/publish';
 
 function isRenderablePublicUrl(url: string | null | undefined): url is string {
@@ -76,6 +80,24 @@ export default function PublicVisionPage() {
     );
   }, [payload]);
 
+  const photoCount = useMemo(
+    () => (payload?.videos || []).filter((v) => isImageMime(v.mimeType)).length,
+    [payload]
+  );
+  const videoCount = useMemo(
+    () => (payload?.videos || []).filter((v) => isVideoMime(v.mimeType)).length,
+    [payload]
+  );
+
+  const metadataLine = useMemo(() => {
+    const parts: string[] = [];
+    if (uploadDateLabel) parts.push(uploadDateLabel);
+    if (totalSize > 0) parts.push(formatBytes(totalSize));
+    parts.push(`${photoCount} ${photoCount === 1 ? 'Photo' : 'Photos'}`);
+    parts.push(`${videoCount} ${videoCount === 1 ? 'Video' : 'Videos'}`);
+    return parts.join(' • ');
+  }, [uploadDateLabel, totalSize, photoCount, videoCount]);
+
   if (loading) return <main className="min-h-screen bg-black" />;
 
   if (error || !payload) {
@@ -94,12 +116,12 @@ export default function PublicVisionPage() {
 
   return (
     <main className="relative min-h-screen bg-black text-white">
-      <header className="fixed left-0 right-0 top-0 z-30 flex items-center justify-between px-6 py-6 md:px-10">
-        <p className="text-[11px] uppercase tracking-[0.4em] text-white/55">FramePort</p>
-        <p className="text-[11px] uppercase tracking-[0.35em] text-white/35">Vision Board</p>
+      <header className="sticky top-0 z-50 flex items-center justify-between bg-black/80 px-6 py-5 backdrop-blur-md md:px-10">
+        <p className="text-[11px] uppercase tracking-[0.4em] text-white">FramePort</p>
+        <p className="text-[11px] uppercase tracking-[0.35em] text-white">Vision Board</p>
       </header>
 
-      <section className="relative flex min-h-screen items-end overflow-hidden">
+      <section className="relative flex min-h-[calc(100vh-4.5rem)] items-end overflow-hidden">
         <div className="absolute inset-0">
           {heroUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -118,7 +140,7 @@ export default function PublicVisionPage() {
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent" />
         </div>
 
-        <div className="relative z-10 w-full px-6 pb-16 pt-28 md:px-10 md:pb-24">
+        <div className="relative z-10 w-full px-6 pb-16 pt-16 md:px-10 md:pb-24">
           <div className="mx-auto flex max-w-6xl flex-col gap-10 md:flex-row md:items-end md:justify-between">
             <div className="max-w-4xl text-left">
               <h1 className="font-display text-6xl leading-[0.92] tracking-tight sm:text-7xl md:text-8xl lg:text-9xl">
@@ -129,10 +151,9 @@ export default function PublicVisionPage() {
                   {payload.logline}
                 </p>
               ) : null}
-              <div className="mt-6 flex flex-wrap gap-x-8 gap-y-2 text-[11px] uppercase tracking-[0.28em] text-white/45">
-                {uploadDateLabel ? <p>Upload Date: {uploadDateLabel}</p> : null}
-                {totalSize > 0 ? <p>Total Size: {formatBytes(totalSize)}</p> : null}
-              </div>
+              {metadataLine ? (
+                <p className="mt-6 text-[11px] uppercase tracking-[0.28em] text-white">{metadataLine}</p>
+              ) : null}
             </div>
             <div className="text-left md:pb-2 md:text-right">
               <p className="text-[11px] uppercase tracking-[0.3em] text-white/40">Client</p>

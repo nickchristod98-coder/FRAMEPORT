@@ -486,8 +486,8 @@ export default function BoardWorkspacePage() {
 
   return (
     <main className="relative min-h-screen bg-black text-white">
-      <header className="fixed left-0 right-0 top-0 z-30 flex items-center justify-between px-6 py-6 md:px-10">
-        <Link href="/dashboard" className="text-[11px] uppercase tracking-[0.4em] text-white/70">
+      <header className="sticky top-0 z-50 flex items-center justify-between bg-black/80 px-6 py-5 backdrop-blur-md md:px-10">
+        <Link href="/dashboard" className="text-[11px] uppercase tracking-[0.4em] text-white">
           FramePort
         </Link>
         <div className="flex items-center gap-3">
@@ -543,7 +543,7 @@ export default function BoardWorkspacePage() {
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent" />
         </div>
 
-        <div className="relative z-10 w-full px-6 pb-16 pt-28 md:px-10 md:pb-24">
+        <div className="relative z-10 w-full px-6 pb-16 pt-16 md:px-10 md:pb-24">
           <div className="mx-auto max-w-6xl">
             <input
               value={companyName}
