@@ -92,7 +92,15 @@ export default function DashboardPage() {
         <Link href="/dashboard" className="text-[11px] uppercase tracking-[0.4em] text-white/50">
           FramePort
         </Link>
-        <AccountMenu />
+        <div className="flex items-center gap-4">
+          <Link
+            href="/pricing"
+            className="text-[11px] uppercase tracking-[0.25em] text-white/60 transition hover:text-white"
+          >
+            Pricing
+          </Link>
+          <AccountMenu />
+        </div>
       </header>
 
       <div className="relative z-10 mx-auto max-w-6xl px-6 pb-24 pt-10 md:px-10 md:pt-16">

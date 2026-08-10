@@ -5,6 +5,7 @@ import AccountMenu from '../../components/AccountMenu';
 import AmbientBackground from '../../components/AmbientBackground';
 import HeroFramePicker from '../../components/HeroFramePicker';
 import StickyBoardHeader from '../../components/StickyBoardHeader';
+import UpgradeStorageModal from '../../components/UpgradeStorageModal';
 import { getSession } from '../../lib/auth';
 import {
   addVideoToBoard,
@@ -17,6 +18,7 @@ import {
   renameBoardVideo,
   reorderBoardVideos,
   saveBoardHero,
+  StorageUpgradeRequiredError,
   updateBoardDetails,
   UploadCancelledError
 } from '../../lib/boards';
@@ -46,6 +48,11 @@ export default function BoardWorkspacePage() {
   const [adding, setAdding] = useState(false);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [upgradeModal, setUpgradeModal] = useState<{
+    open: boolean;
+    usedLabel: string;
+    limitLabel: string;
+  }>({ open: false, usedLabel: '0 B', limitLabel: '1 GB' });
   const [heroFrame, setHeroFrame] = useState<string | null>(null);
   const [framePickerOpen, setFramePickerOpen] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
@@ -178,7 +185,16 @@ export default function BoardWorkspacePage() {
       await ensureStorageCapacity(neededBytes);
     } catch (err: any) {
       console.error('[board] storage preflight failed', err);
-      setUploadError(err?.message || 'Not enough storage to upload these files.');
+      if (err instanceof StorageUpgradeRequiredError || err?.name === 'StorageUpgradeRequiredError') {
+        setUpgradeModal({
+          open: true,
+          usedLabel: formatBytes(err.usedBytes || 0),
+          limitLabel: formatBytes(err.limitBytes || 0)
+        });
+        setUploadError(null);
+      } else {
+        setUploadError(err?.message || 'Not enough storage to upload these files.');
+      }
       if (inputRef.current) inputRef.current.value = '';
       return;
     }
@@ -274,8 +290,20 @@ export default function BoardWorkspacePage() {
             )
           );
           // Stop the rest of the batch if storage ran out mid-upload
-          if (/storage is full|not enough storage|too large/i.test(message)) {
-            setUploadError(message);
+          if (
+            err instanceof StorageUpgradeRequiredError ||
+            err?.name === 'StorageUpgradeRequiredError' ||
+            /storage limit|storage is full|not enough storage|upgrade to pro/i.test(message)
+          ) {
+            if (err instanceof StorageUpgradeRequiredError || err?.name === 'StorageUpgradeRequiredError') {
+              setUpgradeModal({
+                open: true,
+                usedLabel: formatBytes(err.usedBytes || 0),
+                limitLabel: formatBytes(err.limitBytes || 0)
+              });
+            } else {
+              setUploadError(message);
+            }
             break;
           }
         }
@@ -438,7 +466,15 @@ export default function BoardWorkspacePage() {
       return video;
     } catch (err: any) {
       console.error('[board] mood image upload failed', err);
-      alert(err?.message || 'Upload failed');
+      if (err instanceof StorageUpgradeRequiredError || err?.name === 'StorageUpgradeRequiredError') {
+        setUpgradeModal({
+          open: true,
+          usedLabel: formatBytes(err.usedBytes || 0),
+          limitLabel: formatBytes(err.limitBytes || 0)
+        });
+      } else {
+        alert(err?.message || 'Upload failed');
+      }
       return null;
     }
   }
@@ -487,6 +523,12 @@ export default function BoardWorkspacePage() {
 
   return (
     <main className="relative min-h-screen bg-black text-white">
+      <UpgradeStorageModal
+        open={upgradeModal.open}
+        usedLabel={upgradeModal.usedLabel}
+        limitLabel={upgradeModal.limitLabel}
+        onClose={() => setUpgradeModal((s) => ({ ...s, open: false }))}
+      />
       <StickyBoardHeader
         left={
           <Link href="/dashboard" className="text-[11px] uppercase tracking-[0.4em] text-white">

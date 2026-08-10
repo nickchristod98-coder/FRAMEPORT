@@ -33,7 +33,11 @@ export default function SignInPage() {
         }
       }
       await signIn(email.trim(), password);
-      await router.push('/dashboard');
+      const next =
+        typeof router.query.next === 'string' && router.query.next.startsWith('/')
+          ? router.query.next
+          : '/dashboard';
+      await router.push(next);
     } catch (err: any) {
       setError(err?.message || 'Invalid email or password.');
     } finally {

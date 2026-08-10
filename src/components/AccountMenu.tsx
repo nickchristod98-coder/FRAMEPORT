@@ -48,6 +48,13 @@ export default function AccountMenu() {
           >
             Dashboard
           </Link>
+          <Link
+            href="/pricing"
+            className="mb-2 block text-[11px] uppercase tracking-[0.2em] text-white/70 hover:text-white"
+            onClick={() => setOpen(false)}
+          >
+            Pricing
+          </Link>
           <button
             type="button"
             className="text-[11px] uppercase tracking-[0.2em] text-white/50 hover:text-white"

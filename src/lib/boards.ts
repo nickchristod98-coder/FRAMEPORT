@@ -65,7 +65,20 @@ export type StorageQuota = {
   usedBytes: number;
   limitBytes: number;
   remainingBytes: number;
+  planTier?: string;
 };
+
+export class StorageUpgradeRequiredError extends Error {
+  usedBytes: number;
+  limitBytes: number;
+
+  constructor(message: string, usedBytes: number, limitBytes: number) {
+    super(message);
+    this.name = 'StorageUpgradeRequiredError';
+    this.usedBytes = usedBytes;
+    this.limitBytes = limitBytes;
+  }
+}
 
 function throwIfError(error: { message?: string; code?: string; details?: string; hint?: string } | null, context: string) {
   if (!error) return;
@@ -100,25 +113,34 @@ export async function getStorageQuota(): Promise<StorageQuota> {
     .eq('creator_id', userId);
   throwIfError(error, 'getStorageQuota');
   const usedBytes = (data || []).reduce((sum, row: any) => sum + (Number(row.size) || 0), 0);
-  const limitBytes = storageLimitBytes();
+
+  let limitBytes = storageLimitBytes();
+  let planTier = 'free';
+  try {
+    const { ensureProfile } = await import('./billing');
+    const profile = await ensureProfile(userId);
+    if (profile.storageLimitBytes > 0) limitBytes = profile.storageLimitBytes;
+    planTier = profile.planTier;
+  } catch (err) {
+    console.warn('[boards] profile storage limit unavailable, using default', err);
+  }
+
   return {
     usedBytes,
     limitBytes,
-    remainingBytes: Math.max(0, limitBytes - usedBytes)
+    remainingBytes: Math.max(0, limitBytes - usedBytes),
+    planTier
   };
 }
 
 /** Throws before any upload starts if there isn't enough free storage. */
 export async function ensureStorageCapacity(neededBytes: number): Promise<StorageQuota> {
   const quota = await getStorageQuota();
-  if (quota.remainingBytes <= 0) {
-    throw new Error(
-      `Storage is full (${formatBytes(quota.usedBytes)} of ${formatBytes(quota.limitBytes)} used). Free up space before uploading.`
-    );
-  }
-  if (neededBytes > quota.remainingBytes) {
-    throw new Error(
-      `Not enough storage for these files. Need ${formatBytes(neededBytes)}, only ${formatBytes(quota.remainingBytes)} left.`
+  if (quota.remainingBytes <= 0 || neededBytes > quota.remainingBytes) {
+    throw new StorageUpgradeRequiredError(
+      `Storage limit reached (${formatBytes(quota.usedBytes)} of ${formatBytes(quota.limitBytes)} used). Upgrade to PRO or MAX for more space.`,
+      quota.usedBytes,
+      quota.limitBytes
     );
   }
   return quota;
@@ -488,6 +510,7 @@ export async function addVideoToBoard(
 ): Promise<BoardVideo | null> {
   try {
     if (signal?.aborted) throw new UploadCancelledError();
+    await ensureStorageCapacity(file.size);
     const userId = await requireUserId();
 
     // Confirm ownership
