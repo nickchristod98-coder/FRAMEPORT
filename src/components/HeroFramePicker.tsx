@@ -95,7 +95,7 @@ export default function HeroFramePicker({
         console.error('[HeroFramePicker] source load failed', err);
         const message =
           err?.message === 'Failed to fetch'
-            ? 'Could not load this video (network/CORS). Check the console for the exact URL and that the board-assets bucket allows authenticated reads.'
+            ? 'Could not load this video (network/CORS). Check the console for the exact URL and that the board_assets bucket allows authenticated reads.'
             : err?.message || 'Could not load media.';
         if (!cancelled) setError(message);
       } finally {
@@ -141,7 +141,7 @@ export default function HeroFramePicker({
           } else {
             setError(
               useCrossOrigin
-                ? 'Frame capture blocked by CORS. Enable CORS on the board-assets bucket, or reload so a blob source is used.'
+                ? 'Frame capture blocked by CORS. Enable CORS on the board_assets bucket, or reload so a blob source is used.'
                 : 'Could not capture this frame. Try another position.'
             );
             setReady(false);
@@ -163,7 +163,7 @@ export default function HeroFramePicker({
       });
       setError(
         `Video failed to load. URL logged in console. ${
-          mediaError?.message || 'Check storage permissions / CORS for board-assets.'
+          mediaError?.message || 'Check storage permissions / CORS for board_assets.'
         }`
       );
       setReady(false);

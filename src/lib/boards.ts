@@ -30,8 +30,17 @@ export type Board = {
   heroFramePath?: string | null;
 };
 
-/** Single public bucket for mood frames, images, and project videos */
-const BUCKET = 'board-assets';
+/**
+ * Single public bucket for mood frames, images, and project videos.
+ * Must exist in Supabase Storage (Dashboard → Storage → New bucket → name: board_assets → Public).
+ */
+const BUCKET =
+  (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET?.trim()) ||
+  'board_assets';
+
+export function getStorageBucketName() {
+  return BUCKET;
+}
 
 export function isLocalMediaUrl(url: string | null | undefined): boolean {
   if (!url) return false;
@@ -198,9 +207,17 @@ async function uploadFileWithProgress(
         if (xhr.responseText) message = xhr.responseText.slice(0, 200);
       }
 
-      console.error('[boards] storage upload failed', { status: xhr.status, message, storagePath });
+      console.error('[boards] storage upload failed', { status: xhr.status, message, storagePath, bucket: BUCKET });
       if (isStorageFullError(xhr.status, message)) {
         reject(new Error('Storage is full or the file is too large. Free up space and try again.'));
+        return;
+      }
+      if (/bucket not found/i.test(message)) {
+        reject(
+          new Error(
+            `Storage bucket "${BUCKET}" was not found. Create a public bucket named exactly "board_assets" in Supabase Storage.`
+          )
+        );
         return;
       }
       reject(new Error(message));
@@ -249,14 +266,14 @@ function publicUrl(path: string | null | undefined, bucket: string = BUCKET): st
 }
 
 /**
- * Permanent public URL for an object in board-assets (never signed / never blob).
+ * Permanent public URL for an object in board_assets (never signed / never blob).
  */
 export function getBoardAssetPublicUrl(path: string | null | undefined): string | null {
   return publicUrl(path, BUCKET);
 }
 
 /**
- * Resolve a playable URL for board media. Prefers permanent public board-assets URLs
+ * Resolve a playable URL for board media. Prefers permanent public board_assets URLs
  * so published boards keep working across devices (signed URLs expire).
  */
 export async function resolveStorageUrl(
@@ -745,7 +762,7 @@ async function normalizeHeroImageBlob(input: Blob): Promise<Blob> {
 }
 
 /**
- * Resolve a permanent public mood-frame URL from board-assets (never blob:/data:).
+ * Resolve a permanent public mood-frame URL from board_assets (never blob:/data:).
  */
 export async function resolveHeroFrameDisplayUrl(
   path: string | null | undefined
@@ -792,7 +809,7 @@ export async function resolveHeroFrameDisplayUrl(
 }
 
 /**
- * Upload a local blob/data URL (or remote image) into board-assets and return its public URL.
+ * Upload a local blob/data URL (or remote image) into board_assets and return its public URL.
  */
 export async function uploadBoardAsset(
   boardId: string,
@@ -819,12 +836,22 @@ export async function uploadBoardAsset(
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const path = `${userId}/${boardId}/${safeName}`;
 
+  console.log('[boards] uploadBoardAsset →', { bucket: BUCKET, path, contentType: blob.type });
+
   const { error: uploadErr } = await supabase.storage.from(BUCKET).upload(path, blob, {
     upsert: true,
     contentType: blob.type || 'image/jpeg',
     cacheControl: '3600'
   });
-  throwIfError(uploadErr, 'uploadBoardAsset');
+  if (uploadErr) {
+    const msg = uploadErr.message || '';
+    if (/bucket not found/i.test(msg)) {
+      throw new Error(
+        `Storage bucket "${BUCKET}" was not found. Create a public bucket named exactly "board_assets" in Supabase Storage (or set NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET to your bucket name), then re-run supabase/migrate_board_assets.sql.`
+      );
+    }
+    throwIfError(uploadErr, 'uploadBoardAsset');
+  }
 
   const publicUrlValue = publicUrl(path, BUCKET);
   if (!publicUrlValue) {

@@ -46,7 +46,7 @@ function isPublicHttpUrl(url: string | null | undefined): url is string {
  * (never blob: or data: which only work on the creating device).
  */
 async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
-  // 1) Prefer path → public URL from board-assets
+  // 1) Prefer path → public URL from board_assets
   if (board.heroFramePath) {
     const fromPath =
       (await resolveHeroFrameDisplayUrl(board.heroFramePath)) ||
@@ -61,7 +61,7 @@ async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
     return board.heroFrameUrl.split('?')[0];
   }
 
-  // 3) Local blob/data — upload into board-assets
+  // 3) Local blob/data — upload into board_assets
   if (board.heroFrameUrl && isLocalMediaUrl(board.heroFrameUrl)) {
     const uploaded = await uploadBoardAsset(board.id, board.heroFrameUrl, 'hero-frame.jpg');
     if (uploaded?.publicUrl) {
@@ -69,7 +69,7 @@ async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
     }
   }
 
-  // 4) Download stored hero bytes and upload to board-assets
+  // 4) Download stored hero bytes and upload to board_assets
   const heroBlob = await getHeroFrameBlob(board.id);
   if (heroBlob) {
     const uploaded = await uploadBoardAsset(board.id, heroBlob, 'hero-frame.jpg');
@@ -83,7 +83,7 @@ async function resolvePublishedMediaUrl(
   boardId: string,
   media: { id: string; url: string; name: string; mimeType: string; storagePath?: string }
 ): Promise<string | null> {
-  // 1) Prefer permanent public URL from board-assets path
+  // 1) Prefer permanent public URL from board_assets path
   if (media.storagePath) {
     const fromPath = getBoardAssetPublicUrl(media.storagePath);
     if (fromPath) return fromPath;
