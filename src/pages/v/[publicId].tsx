@@ -1,6 +1,9 @@
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import AmbientBackground from '../../components/AmbientBackground';
+import ProjectMediaGallery from '../../components/ProjectMediaGallery';
+import { formatBytes } from '../../lib/boards';
+import { formatUploadDate } from '../../lib/mediaUrls';
 import { getLocalPublished, PublishedPayload } from '../../lib/publish';
 
 function isRenderablePublicUrl(url: string | null | undefined): url is string {
@@ -58,6 +61,21 @@ export default function PublicVisionPage() {
     };
   }, [id]);
 
+  const totalSize = useMemo(() => {
+    if (!payload) return 0;
+    if (typeof payload.totalSize === 'number' && payload.totalSize > 0) return payload.totalSize;
+    return payload.videos.reduce((sum, v) => sum + (Number(v.size) || 0), 0);
+  }, [payload]);
+
+  const uploadDateLabel = useMemo(() => {
+    if (!payload) return null;
+    return (
+      formatUploadDate(payload.createdAt) ||
+      formatUploadDate(payload.updatedAt) ||
+      formatUploadDate(payload.videos.find((v) => v.createdAt)?.createdAt)
+    );
+  }, [payload]);
+
   if (loading) return <main className="min-h-screen bg-black" />;
 
   if (error || !payload) {
@@ -71,7 +89,6 @@ export default function PublicVisionPage() {
     );
   }
 
-  const hasMedia = payload.videos.length > 0;
   const heroUrl =
     !heroBroken && isRenderablePublicUrl(payload.heroFrameUrl) ? payload.heroFrameUrl : null;
 
@@ -112,6 +129,10 @@ export default function PublicVisionPage() {
                   {payload.logline}
                 </p>
               ) : null}
+              <div className="mt-6 flex flex-wrap gap-x-8 gap-y-2 text-[11px] uppercase tracking-[0.28em] text-white/45">
+                {uploadDateLabel ? <p>Upload Date: {uploadDateLabel}</p> : null}
+                {totalSize > 0 ? <p>Total Size: {formatBytes(totalSize)}</p> : null}
+              </div>
             </div>
             <div className="text-left md:pb-2 md:text-right">
               <p className="text-[11px] uppercase tracking-[0.3em] text-white/40">Client</p>
@@ -127,38 +148,10 @@ export default function PublicVisionPage() {
 
       <section className="relative z-10 border-t border-white/10 bg-black px-6 py-20 md:px-10 md:py-28">
         <div className="mx-auto max-w-6xl">
-          <h2 className="font-display mb-10 text-4xl tracking-tight sm:text-5xl">Project Files</h2>
-          {!hasMedia ? (
-            <p className="text-sm text-white/35">No project files yet.</p>
-          ) : (
-            <div className="columns-1 gap-6 sm:columns-2 lg:columns-3">
-              {payload.videos.map((item) => (
-                <div
-                  key={item.id}
-                  className="mb-6 break-inside-avoid overflow-hidden border border-white/10 bg-white/[0.03]"
-                >
-                  {isRenderablePublicUrl(item.url) ? (
-                    item.mimeType.startsWith('image/') ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={item.url} alt={item.name} className="block h-auto w-full" />
-                    ) : (
-                      <video
-                        src={item.url}
-                        className="block h-auto w-full"
-                        controls
-                        playsInline
-                        preload="metadata"
-                      />
-                    )
-                  ) : (
-                    <div className="flex aspect-video items-center justify-center text-xs text-white/35">
-                      Media unavailable
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+          <ProjectMediaGallery
+            items={payload.videos.filter((v) => isRenderablePublicUrl(v.url))}
+            zipBaseName={`${payload.title || 'project'}-files`.replace(/\s+/g, '-').toLowerCase()}
+          />
         </div>
       </section>
     </main>

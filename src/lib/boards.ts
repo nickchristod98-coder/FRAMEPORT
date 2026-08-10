@@ -8,6 +8,8 @@ export type BoardVideo = {
   url: string;
   storagePath?: string;
   sortOrder?: number;
+  size?: number | null;
+  createdAt?: string | null;
 };
 
 export type BoardHero = {
@@ -418,6 +420,8 @@ export async function getBoard(id: string): Promise<Board | null> {
         mimeType: m.mime_type || '',
         storagePath: m.storage_path,
         sortOrder: m.sort_order,
+        size: typeof m.size === 'number' ? m.size : Number(m.size) || null,
+        createdAt: m.created_at || null,
         url
       };
     })
@@ -557,6 +561,8 @@ export async function addVideoToBoard(
       mimeType: row.mime_type,
       storagePath: row.storage_path,
       sortOrder: row.sort_order,
+      size: typeof row.size === 'number' ? row.size : Number(row.size) || file.size,
+      createdAt: row.created_at || null,
       url: (typeof row.public_url === 'string' && row.public_url) || publicMediaUrl
     };
   } catch (err) {

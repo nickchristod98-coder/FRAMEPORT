@@ -1,10 +1,12 @@
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import AmbientBackground from '../../../components/AmbientBackground';
+import ProjectMediaGallery from '../../../components/ProjectMediaGallery';
 import { getSession } from '../../../lib/auth';
-import { Board, getBoard } from '../../../lib/boards';
+import { Board, formatBytes, getBoard } from '../../../lib/boards';
 import { isUsableImageSrc } from '../../../lib/mediaFrame';
+import { formatUploadDate } from '../../../lib/mediaUrls';
 
 const PLACEHOLDER_COUNT = 8;
 
@@ -50,6 +52,19 @@ export default function VisionBoardPage() {
     };
   }, [id]);
 
+  const totalSize = useMemo(
+    () => (board?.videos || []).reduce((sum, v) => sum + (Number(v.size) || 0), 0),
+    [board]
+  );
+
+  const uploadDateLabel = useMemo(() => {
+    if (!board) return null;
+    return (
+      formatUploadDate(board.createdAt) ||
+      formatUploadDate(board.videos.find((v) => v.createdAt)?.createdAt)
+    );
+  }, [board]);
+
   if (loading) {
     return <main className="min-h-screen bg-black" />;
   }
@@ -65,14 +80,6 @@ export default function VisionBoardPage() {
   }
 
   const hasMedia = board.videos.length > 0;
-  const items = hasMedia
-    ? board.videos
-    : Array.from({ length: PLACEHOLDER_COUNT }).map((_, i) => ({
-        id: `ph-${i}`,
-        name: `Placeholder ${i + 1}`,
-        mimeType: '',
-        url: ''
-      }));
 
   return (
     <main className="relative min-h-screen bg-black text-white">
@@ -86,7 +93,6 @@ export default function VisionBoardPage() {
         <p className="text-[11px] uppercase tracking-[0.4em] text-white/45">Vision Board</p>
       </header>
 
-      {/* Full front-page hero with video frame behind names */}
       <section className="relative flex min-h-screen items-end overflow-hidden">
         <div className="absolute inset-0">
           {isUsableImageSrc(heroFrame) ? (
@@ -117,6 +123,10 @@ export default function VisionBoardPage() {
                   {board.logline}
                 </p>
               ) : null}
+              <div className="mt-6 flex flex-wrap gap-x-8 gap-y-2 text-[11px] uppercase tracking-[0.28em] text-white/45">
+                {uploadDateLabel ? <p>Upload Date: {uploadDateLabel}</p> : null}
+                {totalSize > 0 ? <p>Total Size: {formatBytes(totalSize)}</p> : null}
+              </div>
             </div>
             <div className="text-left md:pb-2 md:text-right">
               <p className="text-[11px] uppercase tracking-[0.3em] text-white/40">Client</p>
@@ -130,48 +140,38 @@ export default function VisionBoardPage() {
         </div>
       </section>
 
-      {/* Media grid */}
       <section className="relative z-10 border-t border-white/10 bg-black px-6 py-20 md:px-10 md:py-28">
         <div className="mx-auto max-w-6xl">
-          <h2 className="font-display mb-10 text-4xl tracking-tight sm:text-5xl">Project Files</h2>
-          {!hasMedia && (
-            <p className="mb-10 text-[11px] uppercase tracking-[0.3em] text-white/30">
-              Placeholders — upload media from the board editor
-            </p>
-          )}
-
-          <div className="columns-1 gap-6 sm:columns-2 lg:columns-3">
-            {items.map((item) => (
-              <div
-                key={item.id}
-                className="mb-6 break-inside-avoid overflow-hidden border border-white/10 bg-white/[0.03]"
-              >
-                {item.url ? (
-                  item.mimeType.startsWith('image/') ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={item.url} alt={item.name} className="block h-auto w-full" />
-                  ) : (
-                    <video
-                      src={item.url}
-                      className="block h-auto w-full"
-                      controls
-                      playsInline
-                      preload="metadata"
-                    />
-                  )
-                ) : (
-                  <div className="flex aspect-[4/5] flex-col items-center justify-center gap-3 p-8 text-center">
-                    <div className="h-px w-12 bg-white/20" />
-                    <p className="font-display text-2xl text-white/35">Frame</p>
-                    <p className="text-[11px] uppercase tracking-[0.3em] text-white/25">
-                      Video placeholder
-                    </p>
-                    <div className="h-px w-12 bg-white/20" />
+          {hasMedia ? (
+            <ProjectMediaGallery
+              items={board.videos}
+              zipBaseName={`${board.title || 'project'}-files`.replace(/\s+/g, '-').toLowerCase()}
+            />
+          ) : (
+            <>
+              <h2 className="font-display mb-4 text-4xl tracking-tight sm:text-5xl">Project Files</h2>
+              <p className="mb-10 text-[11px] uppercase tracking-[0.3em] text-white/30">
+                Placeholders — upload media from the board editor
+              </p>
+              <div className="columns-1 gap-6 sm:columns-2 lg:columns-3">
+                {Array.from({ length: PLACEHOLDER_COUNT }).map((_, i) => (
+                  <div
+                    key={`ph-${i}`}
+                    className="mb-6 break-inside-avoid overflow-hidden border border-white/10 bg-white/[0.03]"
+                  >
+                    <div className="flex aspect-[4/5] flex-col items-center justify-center gap-3 p-8 text-center">
+                      <div className="h-px w-12 bg-white/20" />
+                      <p className="font-display text-2xl text-white/35">Frame</p>
+                      <p className="text-[11px] uppercase tracking-[0.3em] text-white/25">
+                        Video placeholder
+                      </p>
+                      <div className="h-px w-12 bg-white/20" />
+                    </div>
                   </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          )}
         </div>
       </section>
     </main>

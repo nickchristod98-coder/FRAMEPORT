@@ -17,6 +17,8 @@ export type PublishedMedia = {
   name: string;
   mimeType: string;
   url: string;
+  size?: number | null;
+  createdAt?: string | null;
 };
 
 export type PublishedPayload = {
@@ -28,7 +30,11 @@ export type PublishedPayload = {
   logline?: string;
   heroFrameUrl: string | null;
   videos: PublishedMedia[];
+  /** Board creation / upload date ISO */
+  createdAt?: string;
   updatedAt: string;
+  /** Sum of asset sizes in bytes */
+  totalSize?: number;
 };
 
 function isPublicHttpUrl(url: string | null | undefined): url is string {
@@ -137,12 +143,16 @@ export async function buildAndPublishSnapshot(boardId: string): Promise<{
         id: v.id,
         name: v.name,
         mimeType: v.mimeType,
-        url
+        url,
+        size: v.size ?? null,
+        createdAt: v.createdAt ?? null
       });
     } catch (err) {
       console.error('[publish] media upload failed', v.id, err);
     }
   }
+
+  const totalSize = videos.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
 
   const payload: PublishedPayload = {
     publicId,
@@ -153,7 +163,9 @@ export async function buildAndPublishSnapshot(boardId: string): Promise<{
     logline: board.logline,
     heroFrameUrl,
     videos,
-    updatedAt: new Date().toISOString()
+    createdAt: board.createdAt,
+    updatedAt: new Date().toISOString(),
+    totalSize
   };
 
   await markBoardPublished(boardId);
