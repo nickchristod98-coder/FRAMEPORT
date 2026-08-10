@@ -259,11 +259,15 @@ export default function ProjectMediaGallery({
         >
           <button
             type="button"
-            onClick={() => setActiveId(null)}
-            className="absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-2xl leading-none text-white backdrop-blur-sm transition hover:bg-black/90 md:right-6 md:top-6"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              setActiveId(null);
+            }}
+            className="fixed right-4 top-4 z-50 cursor-pointer rounded-full bg-black/60 p-2 text-2xl leading-none text-white transition hover:bg-black/90 md:right-6 md:top-6"
             aria-label="Close preview"
           >
-            ×
+            <span className="flex h-7 w-7 items-center justify-center">×</span>
           </button>
 
           <div

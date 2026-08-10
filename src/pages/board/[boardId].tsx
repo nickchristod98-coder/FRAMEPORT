@@ -4,6 +4,7 @@ import { DragEvent, useEffect, useRef, useState } from 'react';
 import AccountMenu from '../../components/AccountMenu';
 import AmbientBackground from '../../components/AmbientBackground';
 import HeroFramePicker from '../../components/HeroFramePicker';
+import StickyBoardHeader from '../../components/StickyBoardHeader';
 import { getSession } from '../../lib/auth';
 import {
   addVideoToBoard,
@@ -486,40 +487,44 @@ export default function BoardWorkspacePage() {
 
   return (
     <main className="relative min-h-screen bg-black text-white">
-      <header className="sticky top-0 z-50 flex items-center justify-between bg-black/80 px-6 py-5 backdrop-blur-md md:px-10">
-        <Link href="/dashboard" className="text-[11px] uppercase tracking-[0.4em] text-white">
-          FramePort
-        </Link>
-        <div className="flex items-center gap-3">
-          {savedFlash && (
-            <span className="hidden text-[11px] uppercase tracking-[0.2em] text-white/50 sm:inline">
-              Autosaved
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => setFramePickerOpen(true)}
-            className="border border-white/35 bg-black/30 px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.2em] text-white backdrop-blur-sm transition hover:border-white"
-          >
-            Mood frame
-          </button>
-          <Link
-            href={`/board/${board.id}/vision`}
-            className="border border-white/50 bg-black/30 px-5 py-2.5 text-[11px] font-medium uppercase tracking-[0.2em] text-white backdrop-blur-sm transition hover:border-white hover:bg-white hover:text-black"
-          >
-            Preview Board
+      <StickyBoardHeader
+        left={
+          <Link href="/dashboard" className="text-[11px] uppercase tracking-[0.4em] text-white">
+            FramePort
           </Link>
-          <button
-            type="button"
-            onClick={handlePublish}
-            disabled={publishing}
-            className="border border-white bg-white px-5 py-2.5 text-[11px] font-medium uppercase tracking-[0.2em] text-black transition hover:bg-transparent hover:text-white disabled:opacity-50"
-          >
-            {publishing ? 'Publishing…' : board.publishedAt ? 'Publish' : 'Publish'}
-          </button>
-          <AccountMenu />
-        </div>
-      </header>
+        }
+        right={
+          <>
+            {savedFlash && (
+              <span className="hidden text-[11px] uppercase tracking-[0.2em] text-white/50 sm:inline">
+                Autosaved
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setFramePickerOpen(true)}
+              className="border border-white/35 bg-black/30 px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.2em] text-white backdrop-blur-sm transition hover:border-white"
+            >
+              Mood frame
+            </button>
+            <Link
+              href={`/board/${board.id}/vision`}
+              className="border border-white/50 bg-black/30 px-5 py-2.5 text-[11px] font-medium uppercase tracking-[0.2em] text-white backdrop-blur-sm transition hover:border-white hover:bg-white hover:text-black"
+            >
+              Preview Board
+            </Link>
+            <button
+              type="button"
+              onClick={handlePublish}
+              disabled={publishing}
+              className="border border-white bg-white px-5 py-2.5 text-[11px] font-medium uppercase tracking-[0.2em] text-black transition hover:bg-transparent hover:text-white disabled:opacity-50"
+            >
+              {publishing ? 'Publishing…' : board.publishedAt ? 'Publish' : 'Publish'}
+            </button>
+            <AccountMenu />
+          </>
+        }
+      />
 
       {/* Hero — live preview of editable names over mood frame */}
       <section className="relative flex min-h-screen items-end overflow-hidden">
@@ -543,7 +548,7 @@ export default function BoardWorkspacePage() {
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent" />
         </div>
 
-        <div className="relative z-10 w-full px-6 pb-16 pt-16 md:px-10 md:pb-24">
+        <div className="relative z-10 w-full px-6 pb-16 pt-28 md:px-10 md:pb-24">
           <div className="mx-auto max-w-6xl">
             <input
               value={companyName}

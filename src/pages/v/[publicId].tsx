@@ -2,6 +2,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState } from 'react';
 import AmbientBackground from '../../components/AmbientBackground';
 import ProjectMediaGallery from '../../components/ProjectMediaGallery';
+import StickyBoardHeader from '../../components/StickyBoardHeader';
 import { formatBytes } from '../../lib/boards';
 import {
   formatUploadDate,
@@ -116,12 +117,14 @@ export default function PublicVisionPage() {
 
   return (
     <main className="relative min-h-screen bg-black text-white">
-      <header className="sticky top-0 z-50 flex items-center justify-between bg-black/80 px-6 py-5 backdrop-blur-md md:px-10">
-        <p className="text-[11px] uppercase tracking-[0.4em] text-white">FramePort</p>
-        <p className="text-[11px] uppercase tracking-[0.35em] text-white">Vision Board</p>
-      </header>
+      <StickyBoardHeader
+        left={<p className="text-[11px] uppercase tracking-[0.4em] text-white">FramePort</p>}
+        right={
+          <p className="text-[11px] uppercase tracking-[0.35em] text-white">Vision Board</p>
+        }
+      />
 
-      <section className="relative flex min-h-[calc(100vh-4.5rem)] items-end overflow-hidden">
+      <section className="relative flex min-h-screen items-end overflow-hidden">
         <div className="absolute inset-0">
           {heroUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -140,7 +143,7 @@ export default function PublicVisionPage() {
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent" />
         </div>
 
-        <div className="relative z-10 w-full px-6 pb-16 pt-16 md:px-10 md:pb-24">
+        <div className="relative z-10 w-full px-6 pb-16 pt-28 md:px-10 md:pb-24">
           <div className="mx-auto flex max-w-6xl flex-col gap-10 md:flex-row md:items-end md:justify-between">
             <div className="max-w-4xl text-left">
               <h1 className="font-display text-6xl leading-[0.92] tracking-tight sm:text-7xl md:text-8xl lg:text-9xl">
