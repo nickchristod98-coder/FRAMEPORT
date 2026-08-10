@@ -112,8 +112,8 @@ export default function AccountPage() {
 
           <div className="mt-10 border-t border-white/10 pt-8">
             <p className="text-[11px] uppercase tracking-[0.28em] text-white/40">Current plan</p>
-            <p className="mt-3 font-display text-2xl">
-              {planName} · {storageLabel}
+            <p className="mt-3 text-xl font-bold uppercase tracking-wider text-white">
+              {planName} PLAN · {storageLabel}
             </p>
             {profile?.subscriptionStatus ? (
               <p className="mt-2 text-xs uppercase tracking-[0.2em] text-white/35">

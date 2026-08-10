@@ -196,7 +196,7 @@ export default function PricingPage() {
                     >
                       {signedIn ? (isCurrent ? 'Current plan' : 'Go to dashboard') : 'Get started'}
                     </Link>
-                  ) : paid && isCurrent ? (
+                  ) : isCurrent ? (
                     <button
                       type="button"
                       onClick={onManage}
@@ -204,6 +204,15 @@ export default function PricingPage() {
                       className="inline-flex w-full items-center justify-center bg-white px-5 py-3 text-[11px] uppercase tracking-[0.25em] text-black transition hover:bg-white/90 disabled:opacity-60"
                     >
                       {loadingPlan ? 'Opening…' : 'Manage Subscription'}
+                    </button>
+                  ) : currentTier === 'pro' && plan.id === 'max' ? (
+                    <button
+                      type="button"
+                      onClick={() => onSubscribe('max')}
+                      disabled={!!loadingPlan}
+                      className="inline-flex w-full items-center justify-center bg-white px-5 py-3 text-[11px] uppercase tracking-[0.25em] text-black transition hover:bg-white/90 disabled:opacity-60"
+                    >
+                      {loadingPlan === 'max' ? 'Upgrading…' : 'Upgrade to MAX'}
                     </button>
                   ) : paid && !isCurrent ? (
                     <button

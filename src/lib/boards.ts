@@ -30,6 +30,8 @@ export type Board = {
   videos: BoardVideo[];
   heroFrameUrl?: string | null;
   heroFramePath?: string | null;
+  /** Optional password required for public client view */
+  accessPassword?: string | null;
 };
 
 /**
@@ -54,7 +56,14 @@ const DEFAULT_STORAGE_LIMIT_BYTES = 1024 * 1024 * 1024;
 
 /** Columns returned after board writes — never quote identifiers; PostgREST quotes them itself. */
 const BOARD_SELECT =
+  'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,access_password,created_at,updated_at';
+
+const BOARD_SELECT_LEGACY =
   'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,created_at,updated_at';
+
+function isMissingAccessPasswordColumn(error: { message?: string } | null) {
+  return !!error && /access_password|schema cache|Could not find/i.test(error.message || '');
+}
 
 export type UploadProgress = {
   loaded: number;
@@ -353,7 +362,8 @@ function mapBoardRow(row: any, videos: BoardVideo[] = [], heroFrameUrl: string |
       : null,
     videos,
     heroFrameUrl,
-    heroFramePath: row.hero_frame_path || null
+    heroFramePath: row.hero_frame_path || null,
+    accessPassword: row.access_password ?? null
   };
 }
 
@@ -365,11 +375,22 @@ async function requireUserId() {
 
 export async function listBoards(): Promise<Omit<Board, 'videos' | 'heroFrameUrl'>[]> {
   const userId = await requireUserId();
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('vision_boards')
     .select(BOARD_SELECT)
     .eq('creator_id', userId)
     .order('created_at', { ascending: false });
+
+  if (isMissingAccessPasswordColumn(error)) {
+    const legacy = await supabase
+      .from('vision_boards')
+      .select(BOARD_SELECT_LEGACY)
+      .eq('creator_id', userId)
+      .order('created_at', { ascending: false });
+    data = (legacy.data as any) || null;
+    error = legacy.error;
+  }
+
   throwIfError(error, 'listBoards');
   return (data || []).map((row) => mapBoardRow(row));
 }
@@ -379,6 +400,7 @@ export async function createBoard(input: {
   clientName: string;
   companyName: string;
   logline?: string;
+  accessPassword?: string;
 }): Promise<Omit<Board, 'videos' | 'heroFrameUrl'>> {
   try {
     const userId = await requireUserId();
@@ -392,12 +414,31 @@ export async function createBoard(input: {
     if (trimmedLogline) {
       payload.logline = trimmedLogline;
     }
+    const trimmedPassword = input.accessPassword?.trim();
+    if (trimmedPassword) {
+      payload.access_password = trimmedPassword;
+    }
 
     const { data, error } = await supabase
       .from('vision_boards')
       .insert(payload)
       .select(BOARD_SELECT)
       .single();
+
+    // Older schemas may not have access_password yet — retry without it
+    if (error && /access_password|schema cache|Could not find/i.test(error.message || '')) {
+      delete payload.access_password;
+      const retry = await supabase
+        .from('vision_boards')
+        .insert(payload)
+        .select(
+          'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,created_at,updated_at'
+        )
+        .single();
+      throwIfError(retry.error, 'createBoard');
+      if (!retry.data) throw new Error('Board was created but no row was returned.');
+      return mapBoardRow(retry.data);
+    }
 
     throwIfError(error, 'createBoard');
     if (!data) throw new Error('Board was created but no row was returned.');
@@ -410,12 +451,24 @@ export async function createBoard(input: {
 
 export async function getBoard(id: string): Promise<Board | null> {
   const userId = await requireUserId();
-  const { data: row, error } = await supabase
+  let { data: row, error } = await supabase
     .from('vision_boards')
     .select(BOARD_SELECT)
     .eq('id', id)
     .eq('creator_id', userId)
     .maybeSingle();
+
+  if (isMissingAccessPasswordColumn(error)) {
+    const legacy = await supabase
+      .from('vision_boards')
+      .select(BOARD_SELECT_LEGACY)
+      .eq('id', id)
+      .eq('creator_id', userId)
+      .maybeSingle();
+    row = (legacy.data as any) || null;
+    error = legacy.error;
+  }
+
   throwIfError(error, 'getBoard');
   if (!row) return null;
 
@@ -455,7 +508,7 @@ export async function getBoard(id: string): Promise<Board | null> {
 
 export async function updateBoardDetails(
   boardId: string,
-  details: Partial<Pick<Board, 'title' | 'clientName' | 'companyName' | 'logline'>>
+  details: Partial<Pick<Board, 'title' | 'clientName' | 'companyName' | 'logline' | 'accessPassword'>>
 ) {
   const userId = await requireUserId();
   const patch: Record<string, any> = { updated_at: new Date().toISOString() };
@@ -463,6 +516,9 @@ export async function updateBoardDetails(
   if (details.clientName !== undefined) patch.client_name = details.clientName.trim();
   if (details.companyName !== undefined) patch.company_name = details.companyName.trim();
   if (details.logline !== undefined) patch.logline = details.logline.trim() || null;
+  if (details.accessPassword !== undefined) {
+    patch.access_password = (details.accessPassword || '').trim() || null;
+  }
 
   const { data, error } = await supabase
     .from('vision_boards')
@@ -471,6 +527,22 @@ export async function updateBoardDetails(
     .eq('creator_id', userId)
     .select(BOARD_SELECT)
     .single();
+
+  if (error && /access_password|schema cache|Could not find/i.test(error.message || '')) {
+    delete patch.access_password;
+    const retry = await supabase
+      .from('vision_boards')
+      .update(patch)
+      .eq('id', boardId)
+      .eq('creator_id', userId)
+      .select(
+        'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,created_at,updated_at'
+      )
+      .single();
+    throwIfError(retry.error, 'updateBoardDetails');
+    return mapBoardRow(retry.data);
+  }
+
   throwIfError(error, 'updateBoardDetails');
   return mapBoardRow(data);
 }

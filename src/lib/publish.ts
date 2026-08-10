@@ -35,6 +35,8 @@ export type PublishedPayload = {
   updatedAt: string;
   /** Sum of asset sizes in bytes */
   totalSize?: number;
+  /** True when clients must enter a password (never includes the password itself) */
+  passwordProtected?: boolean;
 };
 
 function isPublicHttpUrl(url: string | null | undefined): url is string {
@@ -165,7 +167,8 @@ export async function buildAndPublishSnapshot(boardId: string): Promise<{
     videos,
     createdAt: board.createdAt,
     updatedAt: new Date().toISOString(),
-    totalSize
+    totalSize,
+    passwordProtected: Boolean(board.accessPassword && board.accessPassword.trim())
   };
 
   await markBoardPublished(boardId);

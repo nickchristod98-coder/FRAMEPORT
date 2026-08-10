@@ -27,6 +27,7 @@ export default function DashboardPage() {
   const [clientName, setClientName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [logline, setLogline] = useState('');
+  const [accessPassword, setAccessPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -62,6 +63,7 @@ export default function DashboardPage() {
     setClientName('');
     setCompanyName('');
     setLogline('');
+    setAccessPassword('');
     setModalOpen(true);
   }
 
@@ -71,7 +73,13 @@ export default function DashboardPage() {
     setCreating(true);
     setError(null);
     try {
-      const board = await createBoard({ title, clientName, companyName, logline });
+      const board = await createBoard({
+        title,
+        clientName,
+        companyName,
+        logline,
+        accessPassword
+      });
       if (!board?.id) throw new Error('Board was created but no id was returned.');
       setModalOpen(false);
       // Always land inside the new board editor
@@ -108,8 +116,8 @@ export default function DashboardPage() {
       </header>
 
       <div className="relative z-10 mx-auto max-w-6xl px-6 pb-24 pt-10 md:px-10 md:pt-16">
-        <p className="mb-4 text-[11px] uppercase tracking-[0.28em] text-white/55">
-          {planDisplayName(billing?.planTier || 'free')} plan ·{' '}
+        <p className="mb-4 text-xl font-bold uppercase tracking-wider text-white">
+          {planDisplayName(billing?.planTier || 'free')} PLAN ·{' '}
           {planStorageLabel(billing?.planTier || 'free')}
         </p>
         <h1 className="font-display max-w-4xl text-left text-5xl leading-[0.95] tracking-tight sm:text-6xl md:text-7xl lg:text-8xl">
@@ -212,6 +220,20 @@ export default function DashboardPage() {
                   rows={3}
                   disabled={creating}
                   className="w-full resize-none border border-white/20 bg-transparent px-4 py-3 outline-none focus:border-white/60 disabled:opacity-50"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-[11px] uppercase tracking-[0.25em] text-white/45">
+                  Board password{' '}
+                  <span className="text-white/30">(optional — required for clients if set)</span>
+                </span>
+                <input
+                  type="text"
+                  value={accessPassword}
+                  onChange={(e) => setAccessPassword(e.target.value)}
+                  disabled={creating}
+                  placeholder="Set board password"
+                  className="w-full border border-white/20 bg-transparent px-4 py-3 outline-none focus:border-white/60 disabled:opacity-50"
                 />
               </label>
             </div>

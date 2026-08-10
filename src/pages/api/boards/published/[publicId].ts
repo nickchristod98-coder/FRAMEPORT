@@ -1,23 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-function createPublishedBoardsClient(): SupabaseClient | null {
+function createClientOrNull(): SupabaseClient | null {
   const supabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/+$/, '');
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
-
-  // Prefer service role when configured; fall back to anon (public read on published_boards).
   const key = serviceKey || anonKey;
-  if (!supabaseUrl || !key) {
-    console.error('Published board fetch error:', {
-      message: 'Supabase env vars missing',
-      hasUrl: Boolean(supabaseUrl),
-      hasServiceRole: Boolean(serviceKey),
-      hasAnonKey: Boolean(anonKey)
-    });
-    return null;
-  }
-
+  if (!supabaseUrl || !key) return null;
   return createClient(supabaseUrl, key, {
     auth: { persistSession: false, autoRefreshToken: false }
   });
@@ -33,16 +22,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: 'Missing publicId' });
   }
 
+  const id = String(publicId).trim();
+
   try {
-    const client = createPublishedBoardsClient();
+    const client = createClientOrNull();
     if (!client) {
       return res.status(404).json({ error: 'Board not found' });
     }
 
     const { data, error } = await client
       .from('published_boards')
-      .select('payload')
-      .eq('public_id', String(publicId).trim())
+      .select('payload, board_id')
+      .eq('public_id', id)
       .maybeSingle();
 
     if (error) {
@@ -54,7 +45,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(404).json({ error: 'Board not found' });
     }
 
-    return res.status(200).json({ payload: data.payload });
+    let requiresPassword = Boolean((data.payload as any)?.passwordProtected);
+    try {
+      const { data: board } = await client
+        .from('vision_boards')
+        .select('access_password')
+        .eq('public_id', id)
+        .maybeSingle();
+      if (board) {
+        requiresPassword = Boolean(board.access_password && String(board.access_password).length > 0);
+      }
+    } catch (err) {
+      console.warn('[published] access_password lookup failed', err);
+    }
+
+    // Never leak the password to the client
+    const payload = { ...(data.payload as object), passwordProtected: requiresPassword };
+
+    return res.status(200).json({ payload, requiresPassword });
   } catch (error) {
     console.error('Published board fetch error:', error);
     return res.status(404).json({ error: 'Board not found' });

@@ -65,6 +65,7 @@ export default function BoardWorkspacePage() {
   const [clientName, setClientName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [logline, setLogline] = useState('');
+  const [accessPassword, setAccessPassword] = useState('');
 
   function flashSaved() {
     setSavedFlash(true);
@@ -107,6 +108,7 @@ export default function BoardWorkspacePage() {
           setClientName(data.clientName);
           setCompanyName(data.companyName);
           setLogline(data.logline || '');
+          setAccessPassword(data.accessPassword || '');
           // Only use a validated hero URL — never block page load on full-video frame extraction
           setHeroFrame(isUsableImageSrc(data.heroFrameUrl) ? data.heroFrameUrl : null);
         } else {
@@ -132,17 +134,24 @@ export default function BoardWorkspacePage() {
     clientName?: string;
     companyName?: string;
     logline?: string;
+    accessPassword?: string;
   }) {
     if (!id || !board) return;
     const payload = {
       title: next?.title ?? title,
       clientName: next?.clientName ?? clientName,
       companyName: next?.companyName ?? companyName,
-      logline: next?.logline ?? logline
+      logline: next?.logline ?? logline,
+      accessPassword: next?.accessPassword ?? accessPassword
     };
     try {
       await updateBoardDetails(id, payload);
-      setBoard({ ...board, ...payload, logline: payload.logline || undefined });
+      setBoard({
+        ...board,
+        ...payload,
+        logline: payload.logline || undefined,
+        accessPassword: payload.accessPassword || null
+      });
       flashSaved();
       queuePublishSync();
     } catch (err: any) {
@@ -627,6 +636,22 @@ export default function BoardWorkspacePage() {
                   className="mt-5 w-full resize-none bg-transparent text-lg leading-relaxed text-white/65 outline-none placeholder:text-white/25 md:text-xl"
                   placeholder="Logline (optional)"
                 />
+                <div className="mt-6">
+                  <p className="text-[11px] uppercase tracking-[0.3em] text-white/40">
+                    Board password
+                  </p>
+                  <input
+                    type="text"
+                    value={accessPassword}
+                    onChange={(e) => setAccessPassword(e.target.value)}
+                    onBlur={() => persistDetails({ accessPassword })}
+                    className="mt-2 w-full max-w-md border border-white/20 bg-transparent px-4 py-3 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/50"
+                    placeholder="Optional — clients need this to open the shared link"
+                  />
+                  <p className="mt-2 text-xs text-white/35">
+                    Leave blank to remove password protection. Re-publish after changing.
+                  </p>
+                </div>
               </div>
               <p className="text-[11px] uppercase tracking-[0.35em] text-white/35">Scroll to edit media</p>
             </div>

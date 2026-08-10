@@ -1,5 +1,5 @@
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { useEffect, useMemo, useState } from 'react';
 import AmbientBackground from '../../components/AmbientBackground';
 import ProjectMediaGallery from '../../components/ProjectMediaGallery';
 import StickyBoardHeader from '../../components/StickyBoardHeader';
@@ -22,6 +22,10 @@ function isRenderablePublicUrl(url: string | null | undefined): url is string {
   }
 }
 
+function unlockStorageKey(publicId: string) {
+  return `fp_board_unlock_${publicId}`;
+}
+
 export default function PublicVisionPage() {
   const router = useRouter();
   const { publicId } = router.query;
@@ -31,6 +35,11 @@ export default function PublicVisionPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
+  const [requiresPassword, setRequiresPassword] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -39,13 +48,21 @@ export default function PublicVisionPage() {
       setLoading(true);
       setError(null);
       setHeroBroken(false);
+      setPasswordError(null);
+
+      const alreadyUnlocked =
+        typeof window !== 'undefined' &&
+        sessionStorage.getItem(unlockStorageKey(id)) === '1';
 
       try {
         const res = await fetch(`/api/boards/published/${id}`);
         if (res.ok) {
           const json = await res.json();
           if (!cancelled && json.payload) {
+            const needsPassword = Boolean(json.requiresPassword ?? json.payload.passwordProtected);
             setPayload(json.payload);
+            setRequiresPassword(needsPassword);
+            setUnlocked(!needsPassword || alreadyUnlocked);
             setLoading(false);
             return;
           }
@@ -56,8 +73,13 @@ export default function PublicVisionPage() {
 
       const local = getLocalPublished(id);
       if (!cancelled) {
-        if (local) setPayload(local);
-        else setError('This vision board is unavailable or has not been published yet.');
+        if (local) {
+          setPayload(local);
+          setRequiresPassword(Boolean(local.passwordProtected));
+          setUnlocked(!local.passwordProtected || alreadyUnlocked);
+        } else {
+          setError('This vision board is unavailable or has not been published yet.');
+        }
         setLoading(false);
       }
     })();
@@ -65,6 +87,31 @@ export default function PublicVisionPage() {
       cancelled = true;
     };
   }, [id]);
+
+  async function handleUnlock(e: FormEvent) {
+    e.preventDefault();
+    if (!id) return;
+    setUnlocking(true);
+    setPasswordError(null);
+    try {
+      const res = await fetch(`/api/boards/published/${id}/unlock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: passwordInput })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error || 'Incorrect password');
+      }
+      sessionStorage.setItem(unlockStorageKey(id), '1');
+      setUnlocked(true);
+      setPasswordInput('');
+    } catch (err: any) {
+      setPasswordError(err?.message || 'Incorrect password');
+    } finally {
+      setUnlocking(false);
+    }
+  }
 
   const totalSize = useMemo(() => {
     if (!payload) return 0;
@@ -108,6 +155,46 @@ export default function PublicVisionPage() {
           <p className="font-display text-3xl">FramePort</p>
           <p className="mt-4 text-white/50">{error || 'Not found'}</p>
         </div>
+      </main>
+    );
+  }
+
+  if (requiresPassword && !unlocked) {
+    return (
+      <main className="relative flex min-h-screen items-center justify-center bg-black px-6 text-white">
+        <AmbientBackground />
+        <form
+          onSubmit={handleUnlock}
+          className="relative z-10 w-full max-w-md border border-white/15 bg-black/80 p-8 backdrop-blur-md"
+        >
+          <p className="text-[11px] uppercase tracking-[0.35em] text-white/45">Protected board</p>
+          <h1 className="font-display mt-3 text-3xl tracking-tight">{payload.title}</h1>
+          <p className="mt-3 text-sm text-white/55">
+            Enter the board password to view this vision board.
+          </p>
+          <label className="mt-8 block">
+            <span className="mb-2 block text-[11px] uppercase tracking-[0.25em] text-white/40">
+              Password
+            </span>
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              autoFocus
+              required
+              className="w-full border border-white/20 bg-transparent px-4 py-3 outline-none focus:border-white/55"
+              placeholder="Board password"
+            />
+          </label>
+          {passwordError ? <p className="mt-3 text-sm text-red-300">{passwordError}</p> : null}
+          <button
+            type="submit"
+            disabled={unlocking || !passwordInput.trim()}
+            className="mt-6 w-full bg-white px-5 py-3 text-[11px] uppercase tracking-[0.25em] text-black transition hover:bg-white/90 disabled:opacity-50"
+          >
+            {unlocking ? 'Checking…' : 'Unlock board'}
+          </button>
+        </form>
       </main>
     );
   }
