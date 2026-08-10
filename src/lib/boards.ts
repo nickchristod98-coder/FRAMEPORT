@@ -31,6 +31,13 @@ export type Board = {
 };
 
 const BUCKET = 'vision-board-media';
+/** Permanent public assets for mood frames / published stills */
+const ASSETS_BUCKET = 'board-assets';
+
+export function isLocalMediaUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return url.startsWith('blob:') || url.startsWith('data:');
+}
 
 /** Default 1GB — override with NEXT_PUBLIC_STORAGE_LIMIT_BYTES */
 const DEFAULT_STORAGE_LIMIT_BYTES = 1024 * 1024 * 1024;
@@ -226,13 +233,13 @@ function isValidHttpUrl(url: string | null | undefined): url is string {
 }
 
 /** Sync public URL helper — only returns a well-formed http(s) URL. */
-function publicUrl(path: string | null | undefined): string | null {
+function publicUrl(path: string | null | undefined, bucket: string = BUCKET): string | null {
   if (!path || typeof path !== 'string' || !path.trim()) return null;
   try {
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(path.trim());
+    const { data } = supabase.storage.from(bucket).getPublicUrl(path.trim());
     const url = data?.publicUrl || null;
     if (!isValidHttpUrl(url)) {
-      console.warn('[boards] getPublicUrl returned invalid URL', { path, url });
+      console.warn('[boards] getPublicUrl returned invalid URL', { path, url, bucket });
       return null;
     }
     return url;
@@ -247,25 +254,26 @@ function publicUrl(path: string | null | undefined): string | null {
  */
 export async function resolveStorageUrl(
   path: string | null | undefined,
-  expiresInSeconds = 60 * 60
+  expiresInSeconds = 60 * 60,
+  bucket: string = BUCKET
 ): Promise<string | null> {
   if (!path || typeof path !== 'string' || !path.trim()) return null;
   const clean = path.trim();
 
   try {
-    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(clean, expiresInSeconds);
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(clean, expiresInSeconds);
     if (error) {
-      console.error('[boards] createSignedUrl error', { path: clean, error });
+      console.error('[boards] createSignedUrl error', { path: clean, bucket, error });
     } else if (isValidHttpUrl(data?.signedUrl)) {
       return data!.signedUrl;
     }
   } catch (err) {
-    console.error('[boards] createSignedUrl threw', { path: clean, err });
+    console.error('[boards] createSignedUrl threw', { path: clean, bucket, err });
   }
 
-  const pub = publicUrl(clean);
+  const pub = publicUrl(clean, bucket);
   if (pub) return pub;
-  console.warn('[boards] resolveStorageUrl could not build a valid URL for', clean);
+  console.warn('[boards] resolveStorageUrl could not build a valid URL for', clean, bucket);
   return null;
 }
 
@@ -703,8 +711,8 @@ async function normalizeHeroImageBlob(input: Blob): Promise<Blob> {
 }
 
 /**
- * Resolve a displayable mood-frame URL. Downloads the object when needed so
- * legacy base64-as-jpeg uploads still render, and returns a blob: URL.
+ * Resolve a permanent public mood-frame URL (never blob:/data:).
+ * Tries board-assets first, then legacy vision-board-media.
  */
 export async function resolveHeroFrameDisplayUrl(
   path: string | null | undefined
@@ -712,50 +720,107 @@ export async function resolveHeroFrameDisplayUrl(
   if (!path || !path.trim()) return null;
   const clean = path.trim();
 
-  async function fromBlob(raw: Blob): Promise<string> {
+  async function ensurePublicFromBucket(bucket: string, raw: Blob): Promise<string | null> {
     const normalized = await normalizeHeroImageBlob(raw);
     const rawHead = new Uint8Array(await raw.slice(0, 4).arrayBuffer());
     const needsRepair = !isJpegBinary(rawHead);
     if (needsRepair) {
       try {
-        await supabase.storage.from(BUCKET).upload(clean, normalized, {
+        await supabase.storage.from(bucket).upload(clean, normalized, {
           upsert: true,
           contentType: normalized.type || 'image/jpeg',
-          cacheControl: '0'
+          cacheControl: '3600'
         });
-        console.log('[boards] repaired hero frame object at', clean);
+        console.log('[boards] repaired hero frame object at', bucket, clean);
       } catch (repairErr) {
         console.error('[boards] hero repair upload failed', repairErr);
       }
     }
-    return URL.createObjectURL(normalized);
+    return withCacheBust(publicUrl(clean, bucket));
   }
 
+  // Fast path: public URL already works
+  for (const bucket of [ASSETS_BUCKET, BUCKET]) {
+    const pub = publicUrl(clean, bucket);
+    if (!pub) continue;
+    try {
+      const head = await fetch(pub, { method: 'HEAD' });
+      if (head.ok) return withCacheBust(pub);
+    } catch {
+      // continue — try download/repair
+    }
+  }
+
+  for (const bucket of [ASSETS_BUCKET, BUCKET]) {
+    try {
+      const { data, error } = await supabase.storage.from(bucket).download(clean);
+      if (error || !data) continue;
+      const url = await ensurePublicFromBucket(bucket, data);
+      if (url) return url;
+    } catch (err) {
+      console.error('[boards] resolveHeroFrameDisplayUrl download threw', { bucket, err });
+    }
+  }
+
+  // Last resort: migrate legacy object into board-assets if we can download from media bucket
   try {
-    const { data, error } = await supabase.storage.from(BUCKET).download(clean);
-    if (error) {
-      console.error('[boards] hero download failed, trying public URL', error);
-    } else if (data) {
-      return await fromBlob(data);
+    const { data } = await supabase.storage.from(BUCKET).download(clean);
+    if (data) {
+      const normalized = await normalizeHeroImageBlob(data);
+      await supabase.storage.from(ASSETS_BUCKET).upload(clean, normalized, {
+        upsert: true,
+        contentType: 'image/jpeg',
+        cacheControl: '3600'
+      });
+      return withCacheBust(publicUrl(clean, ASSETS_BUCKET));
     }
   } catch (err) {
-    console.error('[boards] resolveHeroFrameDisplayUrl download threw', err);
+    console.error('[boards] hero migrate to board-assets failed', err);
   }
 
-  const remote = await resolveStorageUrl(clean);
-  if (!remote) return null;
+  return null;
+}
 
-  try {
-    const res = await fetch(remote);
-    if (!res.ok) {
-      console.error('[boards] hero public fetch failed', res.status, remote);
-      return null;
+/**
+ * Upload a local blob/data URL (or remote image) into board-assets and return its public URL.
+ */
+export async function uploadBoardAsset(
+  boardId: string,
+  source: string | Blob,
+  fileName = 'hero-frame.jpg'
+): Promise<{ path: string; publicUrl: string }> {
+  const userId = await requireUserId();
+  let blob: Blob;
+  if (typeof source === 'string') {
+    if (source.startsWith('data:')) {
+      blob = dataUrlToBlob(source);
+    } else if (source.startsWith('blob:') || isValidHttpUrl(source)) {
+      const res = await fetch(source);
+      if (!res.ok) throw new Error('Could not read local image for upload.');
+      blob = await res.blob();
+    } else {
+      throw new Error('Unsupported image source for board asset upload.');
     }
-    return await fromBlob(await res.blob());
-  } catch (err) {
-    console.error('[boards] hero public fetch threw', err);
-    return withCacheBust(remote);
+  } else {
+    blob = source;
   }
+
+  blob = await normalizeHeroImageBlob(blob);
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const path = `${userId}/${boardId}/${safeName}`;
+
+  const { error: uploadErr } = await supabase.storage.from(ASSETS_BUCKET).upload(path, blob, {
+    upsert: true,
+    contentType: blob.type || 'image/jpeg',
+    cacheControl: '3600'
+  });
+  throwIfError(uploadErr, 'uploadBoardAsset');
+
+  const publicUrlValue = publicUrl(path, ASSETS_BUCKET);
+  if (!publicUrlValue) {
+    throw new Error('Uploaded to board-assets but could not resolve a public URL.');
+  }
+  return { path, publicUrl: publicUrlValue };
 }
 
 export async function saveBoardHero(
@@ -765,34 +830,11 @@ export async function saveBoardHero(
 ): Promise<string | null> {
   try {
     const userId = await requireUserId();
-    let blob: Blob;
-    if (frameDataUrl.startsWith('data:')) {
-      blob = dataUrlToBlob(frameDataUrl);
-    } else if (frameDataUrl.startsWith('blob:') || isValidHttpUrl(frameDataUrl)) {
-      const res = await fetch(frameDataUrl);
-      blob = await res.blob();
-    } else {
-      throw new Error('Invalid mood frame image data.');
-    }
-
-    blob = await normalizeHeroImageBlob(blob);
-    // Guarantee binary JPEG for storage
-    const probe = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
-    if (!isJpegBinary(probe) && !blob.type.startsWith('image/')) {
-      throw new Error('Mood frame capture did not produce a valid image.');
-    }
-
-    const path = `${userId}/${boardId}/hero-frame.jpg`;
-
-    // Remove first so browsers / CDN don't keep a stale object identity
-    await supabase.storage.from(BUCKET).remove([path]);
-
-    const { error: uploadErr } = await supabase.storage.from(BUCKET).upload(path, blob, {
-      upsert: true,
-      contentType: blob.type || 'image/jpeg',
-      cacheControl: '0'
-    });
-    throwIfError(uploadErr, 'saveBoardHero.upload');
+    const { path, publicUrl: publicHeroUrl } = await uploadBoardAsset(
+      boardId,
+      frameDataUrl,
+      'hero-frame.jpg'
+    );
 
     const { error } = await supabase
       .from('vision_boards')
@@ -806,8 +848,8 @@ export async function saveBoardHero(
       .eq('creator_id', userId);
     throwIfError(error, 'saveBoardHero.update');
 
-    // Prefer a local blob URL for immediate reliable display
-    return URL.createObjectURL(blob);
+    // Always return a permanent public URL (never blob:/data:)
+    return withCacheBust(publicHeroUrl);
   } catch (err) {
     console.error('[boards] saveBoardHero failed', err);
     throw err;
@@ -872,16 +914,21 @@ export async function getBoardMediaBlob(boardId: string, videoId: string): Promi
 
 export async function getHeroFrameBlob(boardId: string): Promise<Blob | null> {
   const board = await getBoard(boardId);
-  if (!board?.heroFramePath) {
-    if (board?.heroFrameUrl) {
-      const res = await fetch(board.heroFrameUrl);
-      return res.blob();
+  if (board?.heroFramePath) {
+    for (const bucket of [ASSETS_BUCKET, BUCKET]) {
+      const { data, error } = await supabase.storage.from(bucket).download(board.heroFramePath);
+      if (!error && data) return normalizeHeroImageBlob(data);
     }
-    return null;
   }
-  const { data, error } = await supabase.storage.from(BUCKET).download(board.heroFramePath);
-  if (error || !data) return null;
-  return data;
+  if (board?.heroFrameUrl && !isLocalMediaUrl(board.heroFrameUrl)) {
+    try {
+      const res = await fetch(board.heroFrameUrl);
+      if (res.ok) return normalizeHeroImageBlob(await res.blob());
+    } catch (err) {
+      console.error('[boards] getHeroFrameBlob fetch failed', err);
+    }
+  }
+  return null;
 }
 
 export async function getBoardByPublicId(publicId: string) {

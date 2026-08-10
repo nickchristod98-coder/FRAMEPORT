@@ -3,6 +3,17 @@ import { useEffect, useState } from 'react';
 import AmbientBackground from '../../components/AmbientBackground';
 import { getLocalPublished, PublishedPayload } from '../../lib/publish';
 
+function isRenderablePublicUrl(url: string | null | undefined): url is string {
+  if (!url) return false;
+  if (url.startsWith('blob:') || url.startsWith('data:')) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export default function PublicVisionPage() {
   const router = useRouter();
   const { publicId } = router.query;
@@ -11,6 +22,7 @@ export default function PublicVisionPage() {
   const [payload, setPayload] = useState<PublishedPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [heroBroken, setHeroBroken] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -18,8 +30,8 @@ export default function PublicVisionPage() {
     (async () => {
       setLoading(true);
       setError(null);
+      setHeroBroken(false);
 
-      // Prefer remote published snapshot so clients can open the link
       try {
         const res = await fetch(`/api/boards/published/${id}`);
         if (res.ok) {
@@ -31,7 +43,7 @@ export default function PublicVisionPage() {
           }
         }
       } catch {
-        // fall through to local
+        // fall through
       }
 
       const local = getLocalPublished(id);
@@ -60,6 +72,8 @@ export default function PublicVisionPage() {
   }
 
   const hasMedia = payload.videos.length > 0;
+  const heroUrl =
+    !heroBroken && isRenderablePublicUrl(payload.heroFrameUrl) ? payload.heroFrameUrl : null;
 
   return (
     <main className="relative min-h-screen bg-black text-white">
@@ -70,9 +84,17 @@ export default function PublicVisionPage() {
 
       <section className="relative flex min-h-screen items-end overflow-hidden">
         <div className="absolute inset-0">
-          {payload.heroFrameUrl ? (
+          {heroUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={payload.heroFrameUrl} alt="" className="h-full w-full object-cover" />
+            <img
+              src={heroUrl}
+              alt=""
+              className="h-full w-full object-cover"
+              onError={() => {
+                console.warn('[public vision] hero image failed', heroUrl);
+                setHeroBroken(true);
+              }}
+            />
           ) : (
             <AmbientBackground />
           )}
@@ -115,17 +137,23 @@ export default function PublicVisionPage() {
                   key={item.id}
                   className="mb-6 break-inside-avoid overflow-hidden border border-white/10 bg-white/[0.03]"
                 >
-                  {item.mimeType.startsWith('image/') ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={item.url} alt={item.name} className="block h-auto w-full" />
+                  {isRenderablePublicUrl(item.url) ? (
+                    item.mimeType.startsWith('image/') ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={item.url} alt={item.name} className="block h-auto w-full" />
+                    ) : (
+                      <video
+                        src={item.url}
+                        className="block h-auto w-full"
+                        controls
+                        playsInline
+                        preload="metadata"
+                      />
+                    )
                   ) : (
-                    <video
-                      src={item.url}
-                      className="block h-auto w-full"
-                      controls
-                      playsInline
-                      preload="metadata"
-                    />
+                    <div className="flex aspect-video items-center justify-center text-xs text-white/35">
+                      Media unavailable
+                    </div>
                   )}
                 </div>
               ))}

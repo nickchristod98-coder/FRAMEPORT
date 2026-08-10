@@ -1,6 +1,8 @@
 -- FramePort cloud schema (run in Supabase SQL editor)
 -- Matches live project: vision_boards.id is BIGINT, ownership column is creator_id
--- Requires: Auth enabled, Storage bucket named `vision-board-media` (public read recommended)
+-- Requires: Auth enabled, Storage buckets:
+--   - `vision-board-media` (videos / project files; public read recommended)
+--   - `board-assets` (hero frames / published stills; public read required)
 
 create extension if not exists "pgcrypto";
 
@@ -119,4 +121,31 @@ drop policy if exists "boards_storage_delete" on storage.objects;
 create policy "boards_storage_delete" on storage.objects
   for delete using (
     bucket_id = 'vision-board-media' and auth.role() = 'authenticated'
+  );
+
+-- board-assets: public hero / mood frames for published boards
+insert into storage.buckets (id, name, public)
+values ('board-assets', 'board-assets', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "board_assets_storage_select" on storage.objects;
+create policy "board_assets_storage_select" on storage.objects
+  for select using (bucket_id = 'board-assets');
+
+drop policy if exists "board_assets_storage_insert" on storage.objects;
+create policy "board_assets_storage_insert" on storage.objects
+  for insert with check (
+    bucket_id = 'board-assets' and auth.role() = 'authenticated'
+  );
+
+drop policy if exists "board_assets_storage_update" on storage.objects;
+create policy "board_assets_storage_update" on storage.objects
+  for update using (
+    bucket_id = 'board-assets' and auth.role() = 'authenticated'
+  );
+
+drop policy if exists "board_assets_storage_delete" on storage.objects;
+create policy "board_assets_storage_delete" on storage.objects
+  for delete using (
+    bucket_id = 'board-assets' and auth.role() = 'authenticated'
   );
