@@ -78,14 +78,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .eq('id', user.id);
     }
 
-    const origin = siteUrl();
+    const origin =
+      (typeof req.headers.origin === 'string' && req.headers.origin) ||
+      process.env.NEXT_PUBLIC_APP_URL ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      siteUrl(req);
+    const base = origin.replace(/\/+$/, '');
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
       client_reference_id: user.id,
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${origin}/pricing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/pricing?checkout=cancel`,
+      success_url: `${base}/pricing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${base}/pricing?checkout=cancelled`,
       automatic_tax: { enabled: true },
       customer_update: { address: 'auto' },
       metadata: {

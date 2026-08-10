@@ -72,7 +72,7 @@ export default function PricingPage() {
             .catch(() => undefined);
         }
       })();
-    } else if (router.query.checkout === 'cancel') {
+    } else if (router.query.checkout === 'cancel' || router.query.checkout === 'cancelled') {
       setBanner('Checkout canceled. No charges were made.');
     }
   }, [router.isReady, router.query.checkout, router.query.session_id]);
