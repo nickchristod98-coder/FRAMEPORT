@@ -38,19 +38,6 @@ function DownloadIcon({ className = 'h-4 w-4' }: { className?: string }) {
   );
 }
 
-function CloseIcon({ className = 'h-5 w-5' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M6 6l12 12M18 6L6 18"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 const TABS: { id: FilterTab; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'photos', label: 'Photos' },
@@ -270,19 +257,17 @@ export default function ProjectMediaGallery({
           aria-modal="true"
           aria-label={active.name}
         >
-          <div className="flex shrink-0 justify-end px-5 py-4 md:px-8">
-            <button
-              type="button"
-              onClick={() => setActiveId(null)}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/20 transition hover:border-white/45"
-              aria-label="Close"
-            >
-              <CloseIcon />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setActiveId(null)}
+            className="absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-2xl leading-none text-white backdrop-blur-sm transition hover:bg-black/90 md:right-6 md:top-6"
+            aria-label="Close preview"
+          >
+            ×
+          </button>
 
           <div
-            className="flex flex-1 items-center justify-center overflow-auto px-4 pb-10 md:px-8"
+            className="flex flex-1 items-center justify-center overflow-auto px-4 pb-10 pt-16 md:px-8"
             onClick={() => setActiveId(null)}
           >
             <div
@@ -306,14 +291,14 @@ export default function ProjectMediaGallery({
                 />
               )}
 
-              <div className="mt-6 flex w-full max-w-xl flex-col items-center gap-4 text-center">
+              <div className="mt-5 flex w-full max-w-xl flex-col items-center gap-4 text-center">
                 <div>
-                  <p className="font-display text-xl text-white md:text-2xl">{active.name}</p>
-                  <p className="mt-2 text-sm text-white">
-                    {typeof active.size === 'number' && active.size > 0
-                      ? formatBytes(active.size)
-                      : 'Full resolution'}
-                  </p>
+                  <p className="truncate px-4 text-sm text-white md:text-base">{active.name}</p>
+                  {typeof active.size === 'number' && active.size > 0 ? (
+                    <p className="mt-1 text-xs lowercase tracking-wide text-white/70">
+                      {formatBytes(active.size)}
+                    </p>
+                  ) : null}
                 </div>
                 <button
                   type="button"
