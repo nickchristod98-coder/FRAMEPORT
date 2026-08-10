@@ -59,9 +59,11 @@ async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
   }
 
   // 3) Local blob/data — upload into board-assets
-  if (isLocalMediaUrl(board.heroFrameUrl)) {
+  if (board.heroFrameUrl && isLocalMediaUrl(board.heroFrameUrl)) {
     const uploaded = await uploadBoardAsset(board.id, board.heroFrameUrl, 'hero-frame.jpg');
-    return uploaded.publicUrl;
+    if (uploaded?.publicUrl) {
+      return uploaded.publicUrl;
+    }
   }
 
   // 4) Download stored hero bytes and upload to board-assets
