@@ -58,6 +58,18 @@ export function isPlanTier(value: string | null | undefined): value is PlanTier 
   return value === 'free' || value === 'pro' || value === 'max';
 }
 
+export function planDisplayName(tier: PlanTier): string {
+  if (tier === 'pro') return 'PRO';
+  if (tier === 'max') return 'MAX';
+  return 'Free';
+}
+
+export function planStorageLabel(tier: PlanTier): string {
+  if (tier === 'pro') return '20 GB';
+  if (tier === 'max') return '50 GB';
+  return '1 GB';
+}
+
 export function planFromStripePriceId(priceId: string | null | undefined): PlanTier | null {
   if (!priceId) return null;
   const pro = envStripeId('pro');

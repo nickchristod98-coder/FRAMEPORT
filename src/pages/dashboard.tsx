@@ -4,7 +4,9 @@ import { FormEvent, useEffect, useState } from 'react';
 import AccountMenu from '../components/AccountMenu';
 import AmbientBackground from '../components/AmbientBackground';
 import { getSession } from '../lib/auth';
+import { getBillingProfile, UserProfile } from '../lib/billing';
 import { createBoard, listBoards } from '../lib/boards';
+import { planDisplayName, planStorageLabel } from '../lib/plans';
 
 type BoardMeta = {
   id: string;
@@ -19,6 +21,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [boards, setBoards] = useState<BoardMeta[]>([]);
+  const [billing, setBilling] = useState<UserProfile | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [clientName, setClientName] = useState('');
@@ -36,9 +39,10 @@ export default function DashboardPage() {
           router.replace('/signin');
           return;
         }
-        const rows = await listBoards();
+        const [rows, profile] = await Promise.all([listBoards(), getBillingProfile()]);
         if (!cancelled) {
           setBoards(rows);
+          setBilling(profile);
           setReady(true);
         }
       } catch (err: any) {
@@ -104,6 +108,10 @@ export default function DashboardPage() {
       </header>
 
       <div className="relative z-10 mx-auto max-w-6xl px-6 pb-24 pt-10 md:px-10 md:pt-16">
+        <p className="mb-4 text-[11px] uppercase tracking-[0.28em] text-white/55">
+          {planDisplayName(billing?.planTier || 'free')} plan ·{' '}
+          {planStorageLabel(billing?.planTier || 'free')}
+        </p>
         <h1 className="font-display max-w-4xl text-left text-5xl leading-[0.95] tracking-tight sm:text-6xl md:text-7xl lg:text-8xl">
           Start creating
           <br />

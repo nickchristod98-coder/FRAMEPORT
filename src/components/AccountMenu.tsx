@@ -32,10 +32,15 @@ export default function AccountMenu() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex h-10 w-10 items-center justify-center border border-white/30 text-[11px] font-medium tracking-[0.12em] text-white transition hover:border-white"
+        className="flex h-10 w-10 items-center justify-center overflow-hidden border border-white/30 text-[11px] font-medium tracking-[0.12em] text-white transition hover:border-white"
         aria-label="Account"
       >
-        {user.initials}
+        {user.avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={user.avatarUrl} alt="" className="h-full w-full object-cover" />
+        ) : (
+          user.initials
+        )}
       </button>
       {open && (
         <div className="absolute right-0 top-12 z-50 min-w-[200px] border border-white/15 bg-black/95 p-4 shadow-2xl backdrop-blur-md">
@@ -47,6 +52,13 @@ export default function AccountMenu() {
             onClick={() => setOpen(false)}
           >
             Dashboard
+          </Link>
+          <Link
+            href="/account"
+            className="mb-2 block text-[11px] uppercase tracking-[0.2em] text-white/70 hover:text-white"
+            onClick={() => setOpen(false)}
+          >
+            Account
           </Link>
           <Link
             href="/pricing"

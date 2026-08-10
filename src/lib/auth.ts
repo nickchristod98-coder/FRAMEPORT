@@ -6,6 +6,7 @@ export type SessionUser = {
   email: string;
   name: string;
   initials: string;
+  avatarUrl: string | null;
 };
 
 function initialsFromName(name: string, email: string) {
@@ -20,11 +21,16 @@ export function mapUser(user: User | null | undefined): SessionUser | null {
   const meta = user.user_metadata || {};
   const name = (meta.full_name as string) || (meta.name as string) || user.email?.split('@')[0] || 'User';
   const email = user.email || '';
+  const avatarUrl =
+    (typeof meta.avatar_url === 'string' && meta.avatar_url) ||
+    (typeof meta.picture === 'string' && meta.picture) ||
+    null;
   return {
     id: user.id,
     email,
     name,
-    initials: initialsFromName(name, email)
+    initials: initialsFromName(name, email),
+    avatarUrl
   };
 }
 
