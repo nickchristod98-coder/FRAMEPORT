@@ -23,7 +23,7 @@ import {
   updateBoardDetails,
   UploadCancelledError
 } from '../../lib/boards';
-import { extractRandomHdFrame, isUsableImageSrc, pickRandomVideo } from '../../lib/mediaFrame';
+import { extractInitialHeroFrame, isUsableImageSrc, pickRandomHeroSource } from '../../lib/mediaFrame';
 import { resolveGridThumbnailUrl } from '../../lib/mediaUrls';
 import { buildAndPublishSnapshot } from '../../lib/publish';
 
@@ -62,6 +62,7 @@ export default function BoardWorkspacePage() {
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishUrl, setPublishUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const autoHeroAttemptedRef = useRef<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [clientName, setClientName] = useState('');
@@ -88,6 +89,45 @@ export default function BoardWorkspacePage() {
     }, 1000);
   }
 
+  /** Auto-set initial Hero Mood Frame when the board has media but no hero yet. */
+  async function applyInitialHeroIfNeeded(
+    boardId: string,
+    current: Board,
+    pool: BoardVideo[],
+    force = false
+  ) {
+    if (!force && (current.heroFrameUrl || current.heroFramePath || current.hero?.mediaId)) {
+      return;
+    }
+    const source = pickRandomHeroSource(pool);
+    if (!source) return;
+    try {
+      const captured = await extractInitialHeroFrame(source);
+      if (!captured?.frameDataUrl) return;
+      const url = await saveBoardHero(
+        boardId,
+        { mediaId: source.id, time: captured.time },
+        captured.frameDataUrl
+      );
+      const nextHero = isUsableImageSrc(url) ? url : captured.frameDataUrl;
+      setHeroFrame(nextHero);
+      setBoard((prev) =>
+        prev
+          ? {
+              ...prev,
+              hero: { mediaId: source.id, time: captured.time },
+              heroFrameUrl: nextHero,
+              heroFramePath: prev.heroFramePath
+            }
+          : prev
+      );
+      flashSaved();
+      queuePublishSync();
+    } catch (err) {
+      console.error('[board] auto mood frame failed', err);
+    }
+  }
+
   useEffect(() => {
     getSession()
       .then((user) => {
@@ -99,6 +139,7 @@ export default function BoardWorkspacePage() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    autoHeroAttemptedRef.current = null;
     (async () => {
       setLoading(true);
       try {
@@ -111,8 +152,19 @@ export default function BoardWorkspacePage() {
           setCompanyName(data.companyName);
           setLogline(data.logline || '');
           setAccessPassword(data.accessPassword || '');
-          // Only use a validated hero URL — never block page load on full-video frame extraction
-          setHeroFrame(isUsableImageSrc(data.heroFrameUrl) ? data.heroFrameUrl : null);
+          const hasHero = isUsableImageSrc(data.heroFrameUrl);
+          setHeroFrame(hasHero ? data.heroFrameUrl! : null);
+
+          // Board has media but no hero yet → generate initial mood frame
+          if (
+            !hasHero &&
+            !data.heroFramePath &&
+            data.videos.length > 0 &&
+            autoHeroAttemptedRef.current !== id
+          ) {
+            autoHeroAttemptedRef.current = id;
+            void applyInitialHeroIfNeeded(id, data, data.videos);
+          }
         } else {
           setHeroFrame(null);
         }
@@ -325,36 +377,11 @@ export default function BoardWorkspacePage() {
       flashSaved();
       queuePublishSync();
 
-      // Mood frame capture runs after UI unlocks so uploads don't feel frozen
+      // Initial Mood Frame — only when the board doesn't already have one
       if (uploadedBatch.length > 0) {
-        const source = pickRandomVideo(uploadedBatch) || pickRandomVideo(next);
-        if (source) {
-          void (async () => {
-            try {
-              const captured = await extractRandomHdFrame(source);
-              if (!captured?.frameDataUrl) return;
-              const url = await saveBoardHero(
-                id,
-                { mediaId: source.id, time: captured.time },
-                captured.frameDataUrl
-              );
-              const nextHero = isUsableImageSrc(url) ? url : captured.frameDataUrl;
-              setHeroFrame(nextHero);
-              setBoard((prev) =>
-                prev
-                  ? {
-                      ...prev,
-                      hero: { mediaId: source.id, time: captured.time },
-                      heroFrameUrl: nextHero
-                    }
-                  : prev
-              );
-              flashSaved();
-              queuePublishSync();
-            } catch (err) {
-              console.error('[board] auto mood frame failed', err);
-            }
-          })();
+        const needsHero = !updated.heroFrameUrl && !updated.heroFramePath && !updated.hero?.mediaId && !heroFrame;
+        if (needsHero) {
+          void applyInitialHeroIfNeeded(id, updated, next.length ? next : uploadedBatch);
         }
       }
     } catch (err: any) {
@@ -431,11 +458,32 @@ export default function BoardWorkspacePage() {
     if (!confirm('Remove this media from the board?')) return;
     await removeVideoFromBoard(id, videoId);
     const nextVideos = board.videos.filter((v) => v.id !== videoId);
-    const nextHero =
-      board.hero?.mediaId === videoId ? null : board.hero;
-    setBoard({ ...board, videos: nextVideos, hero: nextHero });
-    if (board.hero?.mediaId === videoId) {
+    const wasHero = board.hero?.mediaId === videoId;
+    const nextHero = wasHero ? null : board.hero;
+    setBoard({
+      ...board,
+      videos: nextVideos,
+      hero: nextHero,
+      heroFrameUrl: wasHero ? null : board.heroFrameUrl,
+      heroFramePath: wasHero ? null : board.heroFramePath
+    });
+    if (wasHero) {
       setHeroFrame(null);
+      // Pick a new initial mood frame from remaining assets
+      if (nextVideos.length > 0) {
+        void applyInitialHeroIfNeeded(
+          id,
+          {
+            ...board,
+            videos: nextVideos,
+            hero: null,
+            heroFrameUrl: null,
+            heroFramePath: null
+          },
+          nextVideos,
+          true
+        );
+      }
     }
     flashSaved();
     queuePublishSync();

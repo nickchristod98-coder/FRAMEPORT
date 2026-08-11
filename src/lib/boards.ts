@@ -932,7 +932,8 @@ export type PlayableMediaSource = {
 
 /**
  * Resolve a playable video/image src for the mood-frame picker.
- * Prefers R2 public URL (optionally fetched to blob: for canvas), never Supabase Storage.
+ * Always prefers URL.createObjectURL(blob) from the high-res original
+ * so scrubbing + canvas capture avoid CORS/network issues.
  */
 export async function resolvePlayableMediaSource(
   media: Pick<BoardVideo, 'storagePath' | 'url' | 'name' | 'mimeType'>
@@ -948,31 +949,30 @@ export async function resolvePlayableMediaSource(
     publicUrl: publicSrc || null
   });
 
-  if (publicSrc) {
-    // Prefer blob for canvas / scrubbing when CORS allows fetching from R2
-    try {
-      const res = await fetch(publicSrc);
-      if (res.ok) {
-        const blob = await res.blob();
-        const src = URL.createObjectURL(blob);
-        console.log('[mood-frame] <video> src (blob from R2):', src);
-        return {
-          src,
-          kind: 'blob',
-          revoke: () => URL.revokeObjectURL(src)
-        };
-      }
-    } catch (err: any) {
-      console.warn('[mood-frame] R2 fetch→blob failed, using public URL directly', err?.message);
-    }
-
-    console.log('[mood-frame] <video> src (public, direct):', publicSrc);
-    return { src: publicSrc, kind: 'public' };
+  if (!publicSrc) {
+    throw new Error(
+      `Could not resolve a playable URL for "${media.name || 'media'}". Check NEXT_PUBLIC_R2_PUBLIC_URL and that the object exists in R2.`
+    );
   }
 
-  throw new Error(
-    `Could not resolve a playable URL for "${media.name || 'media'}". Check NEXT_PUBLIC_R2_PUBLIC_URL and that the object exists in R2.`
-  );
+  // Required path: fetch original → blob: URL for <video>/<img> + canvas
+  try {
+    const res = await fetch(publicSrc);
+    if (!res.ok) {
+      throw new Error(`Fetch failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const src = URL.createObjectURL(blob);
+    console.log('[mood-frame] <video> src (blob from R2 original):', src);
+    return {
+      src,
+      kind: 'blob',
+      revoke: () => URL.revokeObjectURL(src)
+    };
+  } catch (err: any) {
+    console.warn('[mood-frame] R2 fetch→blob failed, using public URL directly', err?.message);
+    return { src: publicSrc, kind: 'public' };
+  }
 }
 
 export async function downloadMediaBlob(media: Pick<BoardVideo, 'storagePath' | 'url'>): Promise<Blob | null> {

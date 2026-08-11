@@ -25,6 +25,17 @@ export function pickRandomVideo(videos: BoardVideo[]): BoardVideo | null {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+/** Random photo or video from board assets for the initial Hero Mood Frame. */
+export function pickRandomHeroSource(videos: BoardVideo[]): BoardVideo | null {
+  const pool = videos.filter(
+    (v) =>
+      (!!v.url || !!v.storagePath) &&
+      (v.mimeType.startsWith('video/') || v.mimeType.startsWith('image/'))
+  );
+  if (!pool.length) return null;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 function yieldToMain(): Promise<void> {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') {
@@ -283,6 +294,34 @@ export async function extractRandomHdFrame(
     }
   } catch (err: any) {
     console.error('[mediaFrame] extractRandomHdFrame failed', err);
+    return null;
+  }
+}
+
+/**
+ * Initial Hero Mood Frame still:
+ * - Photos → high-res original
+ * - Videos → first frame near 0.001s
+ */
+export async function extractInitialHeroFrame(
+  media: BoardVideo
+): Promise<{ frameDataUrl: string; time: number } | null> {
+  try {
+    if (!media.url && !media.storagePath) return null;
+
+    if (media.mimeType.startsWith('image/')) {
+      const frame = await extractMediaFrameAt(media, 0);
+      return frame ? { frameDataUrl: frame, time: 0 } : null;
+    }
+
+    const resolved = await resolvePlayableSrc(media);
+    try {
+      return await loadVideoFrame(resolved.src, 0.001);
+    } finally {
+      resolved.revoke?.();
+    }
+  } catch (err: any) {
+    console.error('[mediaFrame] extractInitialHeroFrame failed', err);
     return null;
   }
 }

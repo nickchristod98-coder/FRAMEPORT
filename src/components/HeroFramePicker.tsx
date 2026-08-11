@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BoardVideo, resolvePlayableMediaSource } from '../lib/boards';
 import { captureVideoElementFrameAsync, formatTimecode, isUsableImageSrc } from '../lib/mediaFrame';
+import { isImageMime, isVideoMime, resolveGridThumbnailUrl } from '../lib/mediaUrls';
+import BlurUpImage from './BlurUpImage';
 
 type Props = {
   videos: BoardVideo[];
@@ -12,6 +14,14 @@ type Props = {
   onUploadImage: (file: File) => Promise<BoardVideo | null>;
 };
 
+type SourceFilter = 'all' | 'photos' | 'videos';
+
+/**
+ * Mood Frame modal:
+ * a) Pick an existing high-res photo from board files
+ * b) Scrub a video via blob: URL.createObjectURL (avoids CORS)
+ * c) Upload a separate image/screenshot
+ */
 export default function HeroFramePicker({
   videos,
   initialMediaId,
@@ -23,19 +33,26 @@ export default function HeroFramePicker({
   const [localVideos, setLocalVideos] = useState(videos);
   useEffect(() => setLocalVideos(videos), [videos]);
 
-  const mediaOptions = useMemo(() => localVideos.filter((v) => !!v.url || !!v.storagePath), [localVideos]);
+  const [filter, setFilter] = useState<SourceFilter>('all');
+  const mediaOptions = useMemo(() => {
+    const withSrc = localVideos.filter((v) => !!v.url || !!v.storagePath);
+    if (filter === 'photos') return withSrc.filter((v) => isImageMime(v.mimeType));
+    if (filter === 'videos') return withSrc.filter((v) => isVideoMime(v.mimeType));
+    return withSrc;
+  }, [localVideos, filter]);
+
   const [mediaId, setMediaId] = useState(
-    initialMediaId && mediaOptions.some((v) => v.id === initialMediaId)
+    initialMediaId && localVideos.some((v) => v.id === initialMediaId)
       ? initialMediaId
       : mediaOptions[0]?.id || ''
   );
-  const selected = mediaOptions.find((v) => v.id === mediaId) || null;
-  const isVideo = !!selected?.mimeType.startsWith('video/');
+  const selected = localVideos.find((v) => v.id === mediaId) || mediaOptions[0] || null;
+  const isVideo = !!selected && isVideoMime(selected.mimeType);
+  const isPhoto = !!selected && isImageMime(selected.mimeType);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const playableUrlRef = useRef<string | null>(null);
-  const sourceKindRef = useRef<'blob' | 'signed' | 'public' | null>(null);
   const [playableSrc, setPlayableSrc] = useState<string | null>(null);
   const [sourceKind, setSourceKind] = useState<'blob' | 'signed' | 'public' | null>(null);
   const [duration, setDuration] = useState(0);
@@ -47,15 +64,14 @@ export default function HeroFramePicker({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Always set crossOrigin for remote http(s) sources used for canvas capture.
-  // Never for blob: — that can break loading.
+  // Only set crossOrigin for remote http(s) — never for blob: (breaks loading / capture)
   const useCrossOrigin = !!playableSrc && /^https?:/i.test(playableSrc);
 
   useEffect(() => {
     if (!mediaId && mediaOptions[0]) setMediaId(mediaOptions[0].id);
   }, [mediaOptions, mediaId]);
 
-  // Resolve a playable src (blob preferred) so scrubbing + canvas capture work
+  // Resolve playable src — prefer blob: from original_url for CORS-safe canvas capture
   useEffect(() => {
     let cancelled = false;
     const prev = playableUrlRef.current;
@@ -68,26 +84,23 @@ export default function HeroFramePicker({
       setTime(initialMediaId === mediaId ? initialTime || 0 : 0);
       setPlayableSrc(null);
       setSourceKind(null);
-      sourceKindRef.current = null;
 
       if (!selected) return;
 
       setLoadingSource(true);
       try {
-        console.log('[mood-frame] loading source for', selected.name, selected.id);
         const resolved = await resolvePlayableMediaSource(selected);
         if (cancelled) {
           resolved.revoke?.();
           return;
         }
 
-        console.log('[mood-frame] resolved <video>/<img> URL:', resolved.src, 'kind=', resolved.kind);
         playableUrlRef.current = resolved.kind === 'blob' ? resolved.src : null;
-        sourceKindRef.current = resolved.kind;
         setSourceKind(resolved.kind);
         setPlayableSrc(resolved.src);
 
-        if (!selected.mimeType.startsWith('video/')) {
+        if (!isVideoMime(selected.mimeType)) {
+          // High-res photo preview — use blob or original URL
           setPreview(resolved.src);
           setReady(true);
         }
@@ -95,7 +108,7 @@ export default function HeroFramePicker({
         console.error('[HeroFramePicker] source load failed', err);
         const message =
           err?.message === 'Failed to fetch'
-            ? 'Could not load this video (network/CORS). Check the console for the exact URL and that the board_assets bucket allows authenticated reads.'
+            ? 'Could not load this file. Check R2 CORS allows GET from this origin.'
             : err?.message || 'Could not load media.';
         if (!cancelled) setError(message);
       } finally {
@@ -116,8 +129,6 @@ export default function HeroFramePicker({
     if (!selected || !isVideo || !playableSrc) return;
     const el = videoRef.current;
     if (!el) return;
-
-    console.log('[mood-frame] attaching <video> element src=', playableSrc, 'crossOrigin=', useCrossOrigin);
 
     const onMeta = () => {
       try {
@@ -140,9 +151,9 @@ export default function HeroFramePicker({
             setError(null);
           } else {
             setError(
-              useCrossOrigin
-                ? 'Frame capture blocked by CORS. Enable CORS on the board_assets bucket, or reload so a blob source is used.'
-                : 'Could not capture this frame. Try another position.'
+              sourceKind === 'blob'
+                ? 'Could not capture this frame. Try another position.'
+                : 'Frame capture blocked by CORS. Enable CORS on the R2 bucket, or reload so a local blob source is used.'
             );
             setReady(false);
           }
@@ -162,9 +173,7 @@ export default function HeroFramePicker({
         message: mediaError?.message
       });
       setError(
-        `Video failed to load. URL logged in console. ${
-          mediaError?.message || 'Check storage permissions / CORS for board_assets.'
-        }`
+        `Video failed to load. ${mediaError?.message || 'Check R2 public access / CORS.'}`
       );
       setReady(false);
     };
@@ -180,7 +189,7 @@ export default function HeroFramePicker({
       el.removeEventListener('error', onVideoError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id, isVideo, playableSrc, useCrossOrigin]);
+  }, [selected?.id, isVideo, playableSrc, sourceKind, useCrossOrigin]);
 
   function scrub(next: number) {
     try {
@@ -192,7 +201,6 @@ export default function HeroFramePicker({
         setError('Video metadata is not ready yet. Wait a moment and try again.');
         return;
       }
-      console.log('[mood-frame] scrub to', next, 'src=', playableSrc);
       el.currentTime = Math.min(Math.max(next, 0), Math.max(el.duration - 0.05, 0));
     } catch (err: any) {
       console.error('[HeroFramePicker] scrub failed', err);
@@ -207,8 +215,14 @@ export default function HeroFramePicker({
       alert('Please choose an image file.');
       return;
     }
-    setUploading(true);
+
+    // Instant local preview via createObjectURL (no CORS)
+    const localPreview = URL.createObjectURL(file);
+    setPreview(localPreview);
+    setReady(true);
     setError(null);
+    setUploading(true);
+
     try {
       const added = await onUploadImage(file);
       if (added) {
@@ -217,11 +231,14 @@ export default function HeroFramePicker({
           return [...prev, added];
         });
         setMediaId(added.id);
+        setFilter('photos');
       }
     } catch (err: any) {
       setError(err?.message || 'Image upload failed');
+      setReady(false);
     } finally {
       setUploading(false);
+      // Keep local preview until the selected source reloads; revoke later via effect cleanup
     }
   }
 
@@ -230,10 +247,28 @@ export default function HeroFramePicker({
     setSaving(true);
     setError(null);
     try {
+      // Prefer a durable data URL / http URL for R2 upload (blob: may be revoked)
+      let frameDataUrl = preview;
+      if (preview.startsWith('blob:') && isPhoto && playableSrc) {
+        try {
+          const res = await fetch(playableSrc.startsWith('blob:') ? playableSrc : preview);
+          const blob = await res.blob();
+          frameDataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () =>
+              resolve(typeof reader.result === 'string' ? reader.result : preview);
+            reader.onerror = () => reject(new Error('Could not read frame'));
+            reader.readAsDataURL(blob);
+          });
+        } catch {
+          // fall through with preview
+        }
+      }
+
       await onSave({
         mediaId: selected.id,
         time: isVideo ? time : 0,
-        frameDataUrl: preview
+        frameDataUrl
       });
     } catch (err: any) {
       console.error('[HeroFramePicker] save failed', err);
@@ -244,12 +279,13 @@ export default function HeroFramePicker({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-8 backdrop-blur-sm">
-      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden border border-white/20 bg-black text-white shadow-2xl">
+      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden border border-white/20 bg-black text-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <h2 className="font-display text-3xl tracking-tight">Mood frame</h2>
-            <p className="mt-2 text-sm text-white/45">
-              Choose a clip, scrub to a frame, or upload a still image.
+            <p className="mt-2 max-w-xl text-sm text-white/45">
+              Pick a photo, scrub a video for a high-res still, or upload a screenshot. Saved frames go to
+              Cloudflare R2.
             </p>
           </div>
           <div className="flex gap-2">
@@ -272,17 +308,37 @@ export default function HeroFramePicker({
           </div>
         </div>
 
-        <div className="grid flex-1 gap-0 overflow-auto md:grid-cols-[220px_1fr]">
+        <div className="grid flex-1 gap-0 overflow-auto md:grid-cols-[260px_1fr]">
           <aside className="border-b border-white/10 md:border-b-0 md:border-r">
-            <p className="px-4 py-3 text-[11px] uppercase tracking-[0.25em] text-white/35">Source</p>
-            <div className="px-2 pb-3">
+            <div className="flex gap-1 px-3 pt-3">
+              {(
+                [
+                  ['all', 'All'],
+                  ['photos', 'Photos'],
+                  ['videos', 'Videos']
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setFilter(id)}
+                  className={`px-2.5 py-1.5 text-[10px] uppercase tracking-[0.18em] transition ${
+                    filter === id ? 'bg-white text-black' : 'text-white/50 hover:text-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="px-3 py-3">
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
                 disabled={uploading || saving}
                 className="w-full border border-dashed border-white/30 px-3 py-3 text-left text-[11px] uppercase tracking-[0.18em] text-white/70 transition hover:border-white hover:text-white"
               >
-                {uploading ? 'Uploading…' : '+ Upload image'}
+                {uploading ? 'Uploading…' : '+ Upload screenshot'}
               </button>
               <input
                 ref={fileRef}
@@ -292,23 +348,44 @@ export default function HeroFramePicker({
                 onChange={(e) => handleImageUpload(e.target.files)}
               />
             </div>
-            <div className="max-h-48 space-y-1 overflow-auto px-2 pb-4 md:max-h-none">
+
+            <div className="max-h-56 space-y-1 overflow-auto px-2 pb-4 md:max-h-[55vh]">
               {mediaOptions.length === 0 && (
-                <p className="px-3 py-2 text-sm text-white/40">No media yet — upload an image.</p>
+                <p className="px-3 py-2 text-sm text-white/40">
+                  No media yet — upload a screenshot or add files to the board.
+                </p>
               )}
-              {mediaOptions.map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  onClick={() => setMediaId(v.id)}
-                  disabled={saving}
-                  className={`block w-full truncate px-3 py-3 text-left text-sm transition ${
-                    v.id === mediaId ? 'bg-white text-black' : 'text-white/70 hover:bg-white/10'
-                  }`}
-                >
-                  {v.name}
-                </button>
-              ))}
+              {mediaOptions.map((v) => {
+                const thumb =
+                  resolveGridThumbnailUrl({
+                    thumbnailUrl: v.thumbnailUrl,
+                    originalUrl: v.url,
+                    mimeType: v.mimeType
+                  }) || v.url;
+                const active = v.id === mediaId;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => setMediaId(v.id)}
+                    disabled={saving}
+                    className={`flex w-full items-center gap-3 px-2 py-2 text-left transition ${
+                      active ? 'bg-white text-black' : 'text-white/70 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="h-12 w-12 shrink-0 overflow-hidden bg-white/10">
+                      {thumb ? (
+                        <BlurUpImage
+                          src={thumb}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
+                    <span className="min-w-0 flex-1 truncate text-sm">{v.name}</span>
+                  </button>
+                );
+              })}
             </div>
           </aside>
 
@@ -316,7 +393,7 @@ export default function HeroFramePicker({
             <div className="relative aspect-video overflow-hidden border border-white/15 bg-white/5">
               {loadingSource && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 text-sm text-white/60">
-                  Loading source…
+                  Loading high-res source…
                 </div>
               )}
               {isVideo && selected && playableSrc ? (
@@ -335,7 +412,7 @@ export default function HeroFramePicker({
                 <img src={playableSrc} alt={selected.name} className="h-full w-full object-contain" />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-white/35">
-                  Select or upload a source
+                  Select a photo, scrub a video, or upload a screenshot
                 </div>
               )}
             </div>
@@ -343,8 +420,11 @@ export default function HeroFramePicker({
             {isVideo && (
               <div>
                 <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-white/45">
-                  <span>Frame position</span>
-                  <span>{formatTimecode(time)}</span>
+                  <span>Scrub frame</span>
+                  <span>
+                    {formatTimecode(time)}
+                    {sourceKind === 'blob' ? ' · local blob' : ''}
+                  </span>
                 </div>
                 <input
                   type="range"
@@ -359,11 +439,19 @@ export default function HeroFramePicker({
               </div>
             )}
 
+            {isPhoto && (
+              <p className="text-sm text-white/45">
+                Using this photo at full resolution as the mood frame.
+              </p>
+            )}
+
             {error && <p className="text-sm text-red-300">{error}</p>}
 
             {isUsableImageSrc(preview) && (
               <div>
-                <p className="mb-2 text-[11px] uppercase tracking-[0.25em] text-white/35">Backdrop preview</p>
+                <p className="mb-2 text-[11px] uppercase tracking-[0.25em] text-white/35">
+                  Hero preview
+                </p>
                 <div className="relative h-36 overflow-hidden border border-white/15">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
