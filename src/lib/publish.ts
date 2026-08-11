@@ -97,7 +97,7 @@ async function resolvePublishedMediaUrl(
   boardId: string,
   media: { id: string; url: string; name: string; mimeType: string; storagePath?: string }
 ): Promise<string | null> {
-  // 1) Prefer permanent public URL from board_assets path
+  // 1) Prefer permanent public URL from R2 storage path
   if (media.storagePath) {
     const fromPath = getBoardAssetPublicUrl(media.storagePath);
     if (fromPath) return fromPath;

@@ -1,31 +1,39 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { r2PublicUrl } from '../../../lib/r2';
 import { supabaseAdmin } from '../../../lib/supabaseAdmin';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return res.status(405).end();
-  const { projectId } = req.query;
-  if (!projectId || Array.isArray(projectId)) return res.status(400).json({ error: 'Missing projectId' });
+  const { projectId, boardId } = req.query;
+  const id = (boardId || projectId) as string | string[] | undefined;
+  if (!id || Array.isArray(id)) return res.status(400).json({ error: 'Missing boardId' });
+
   try {
-    const { data, error } = await supabaseAdmin.from('media').select('*').eq('project_id', projectId);
+    const { data, error } = await supabaseAdmin
+      .from('fp_board_media')
+      .select('*')
+      .eq('board_id', id)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
     if (error) throw error;
-    // create signed URLs for admin preview (short lived)
-    const signed = await Promise.all(
-      (data || []).map(async (m: any) => {
-        try {
-          const bucket = m.storage_bucket || 'galleries';
-          const { data: urlData, error: urlErr } = await supabaseAdmin.storage.from(bucket).createSignedUrl(m.storage_path, 60 * 60);
-          const signedUrl = urlErr ? null : (urlData as any).signedURL;
-          return { ...m, signedUrl };
-        } catch (e) {
-          return { ...m, signedUrl: null };
-        }
-      })
-    );
+
+    const signed = (data || []).map((m: any) => {
+      const original =
+        m.original_url ||
+        m.public_url ||
+        r2PublicUrl(m.storage_path) ||
+        null;
+      return {
+        ...m,
+        public_url: original,
+        original_url: original,
+        thumbnail_url: m.thumbnail_url || null,
+        signedUrl: original
+      };
+    });
     return res.status(200).json({ media: signed });
   } catch (err: any) {
-    // eslint-disable-next-line no-console
     console.error('API ERROR [admin/project-media]:', err);
     return res.status(500).json({ error: err?.message || String(err) || 'Server error' });
   }
 }
-
