@@ -1,7 +1,12 @@
-/** Client-side WebP thumbnail generation for R2 uploads. */
+/** Client-side WebP thumbnail / hero-frame generation for R2 uploads. */
+
+import { heroFrameObjectKey, thumbnailObjectKey } from './r2Paths';
+
+export { heroFrameObjectKey, thumbnailObjectKey };
 
 export const THUMB_MAX_EDGE = 600;
 export const THUMB_QUALITY = 0.75;
+export const HERO_WEBP_QUALITY = 0.85;
 
 export type GeneratedThumbnail = {
   blob: Blob;
@@ -15,7 +20,7 @@ function canvasToWebpBlob(canvas: HTMLCanvasElement, quality = THUMB_QUALITY): P
     canvas.toBlob(
       (blob) => {
         if (!blob) {
-          reject(new Error('Could not encode WebP thumbnail'));
+          reject(new Error('Could not encode WebP'));
           return;
         }
         resolve(blob);
@@ -65,7 +70,12 @@ export async function generateImageThumbnail(
       el.onerror = () => reject(new Error('Could not decode image for thumbnail'));
       el.src = objectUrl;
     });
-    const canvas = drawImageToThumbCanvas(img, img.naturalWidth || img.width, img.naturalHeight || img.height, maxEdge);
+    const canvas = drawImageToThumbCanvas(
+      img,
+      img.naturalWidth || img.width,
+      img.naturalHeight || img.height,
+      maxEdge
+    );
     const blob = await canvasToWebpBlob(canvas, quality);
     return {
       blob,
@@ -102,7 +112,10 @@ export async function generateVideoThumbnail(
     });
 
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
-    const target = Math.max(0, Math.min(seekSeconds, duration > 0 ? Math.max(duration - 0.05, 0) : seekSeconds));
+    const target = Math.max(
+      0,
+      Math.min(seekSeconds, duration > 0 ? Math.max(duration - 0.05, 0) : seekSeconds)
+    );
 
     await new Promise<void>((resolve, reject) => {
       const onSeeked = () => resolve();
@@ -144,7 +157,6 @@ export async function generateMediaThumbnail(file: File): Promise<GeneratedThumb
     if (file.type.startsWith('video/')) {
       return await generateVideoThumbnail(file);
     }
-    // Fallback by extension when mime is empty
     const lower = file.name.toLowerCase();
     if (/\.(jpe?g|png|gif|webp|avif|heic)$/i.test(lower)) {
       return await generateImageThumbnail(file);
@@ -159,10 +171,27 @@ export async function generateMediaThumbnail(file: File): Promise<GeneratedThumb
   }
 }
 
-export function thumbnailObjectKey(mediaId: string) {
-  return `thumbnails/${mediaId}-thumb.webp`;
-}
-
-export function heroFrameObjectKey(boardId: string, timestamp = Date.now()) {
-  return `hero-frames/${boardId}-${timestamp}.jpg`;
+/** Re-encode any image blob/data as WebP for hero mood frames. */
+export async function encodeImageBlobAsWebp(
+  input: Blob,
+  quality = HERO_WEBP_QUALITY
+): Promise<Blob> {
+  const objectUrl = URL.createObjectURL(input);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Could not decode image for WebP encode'));
+      el.src = objectUrl;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width || 1;
+    canvas.height = img.naturalHeight || img.height || 1;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D context unavailable');
+    ctx.drawImage(img, 0, 0);
+    return await canvasToWebpBlob(canvas, quality);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }

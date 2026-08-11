@@ -226,7 +226,7 @@ async function requestPresignedUpload(opts: {
       mediaId: opts.mediaId,
       fileKey: opts.fileKey,
       purpose: opts.purpose,
-      skipQuota: opts.skipQuota === true || opts.purpose === 'thumbnail'
+      skipQuota: opts.skipQuota === true || opts.purpose === 'thumbnail' || opts.purpose === 'hero'
     })
   });
 
@@ -338,30 +338,30 @@ async function uploadFileWithProgress(
   opts?: {
     mediaId?: string;
     fileKey?: string;
+    contentType?: string;
+    purpose?: 'media' | 'thumbnail' | 'hero';
     onProgress?: (progress: UploadProgress) => void;
     signal?: AbortSignal;
   }
 ): Promise<{ fileKey: string; publicUrl: string; mediaId: string }> {
   if (opts?.signal?.aborted) throw new UploadCancelledError();
 
+  const { resolveUploadContentType } = await import('./r2Paths');
+  const contentType = opts?.contentType || resolveUploadContentType(file);
+
   const signed = await requestPresignedUpload({
     boardId,
     fileName: file.name,
-    contentType: file.type || 'application/octet-stream',
+    contentType,
     fileSize: file.size,
     mediaId: opts?.mediaId,
-    fileKey: opts?.fileKey
+    fileKey: opts?.fileKey,
+    purpose: opts?.purpose || 'media'
   });
 
   if (opts?.signal?.aborted) throw new UploadCancelledError();
 
-  await putFileToR2(
-    signed.uploadUrl,
-    file,
-    file.type || 'application/octet-stream',
-    opts?.onProgress,
-    opts?.signal
-  );
+  await putFileToR2(signed.uploadUrl, file, contentType, opts?.onProgress, opts?.signal);
 
   return {
     fileKey: signed.fileKey,
@@ -751,22 +751,29 @@ export async function addVideoToBoard(
             return v.toString(16);
           });
 
+    const { originalObjectKey, thumbnailObjectKey, resolveUploadContentType, safeR2FileName } =
+      await import('./r2Paths');
+    const contentType = resolveUploadContentType(file);
+    // Unique object name under board folder to avoid collisions
+    const uniqueFileName = `${mediaId}-${safeR2FileName(file.name)}`;
+    const originalKey = originalObjectKey(boardId, uniqueFileName);
+    const thumbKey = thumbnailObjectKey(boardId, uniqueFileName);
+
     // Generate lightweight WebP thumbnail before upload (non-fatal if it fails)
     let thumbFile: File | null = null;
-    let thumbKey: string | null = null;
     try {
-      const { generateMediaThumbnail, thumbnailObjectKey } = await import('./thumbnails');
+      const { generateMediaThumbnail } = await import('./thumbnails');
       const generated = await generateMediaThumbnail(file);
-      if (generated?.file) {
-        thumbFile = generated.file;
-        thumbKey = thumbnailObjectKey(mediaId);
-      }
+      if (generated?.file) thumbFile = generated.file;
     } catch (err) {
       console.warn('[boards] thumbnail generation skipped', err);
     }
 
     const uploaded = await uploadFileWithProgress(boardId, file, {
       mediaId,
+      fileKey: originalKey,
+      contentType,
+      purpose: 'media',
       onProgress,
       signal
     });
@@ -781,11 +788,11 @@ export async function addVideoToBoard(
     }
 
     let thumbnailUrl: string | null = null;
-    if (thumbFile && thumbKey) {
+    if (thumbFile) {
       try {
         const thumbSigned = await requestPresignedUpload({
           boardId,
-          fileName: 'thumb.webp',
+          fileName: `${uniqueFileName}-thumb.webp`,
           contentType: 'image/webp',
           fileSize: thumbFile.size || 1,
           mediaId,
@@ -805,7 +812,7 @@ export async function addVideoToBoard(
       board_id: boardId,
       creator_id: userId,
       filename: file.name,
-      mime_type: file.type || 'application/octet-stream',
+      mime_type: contentType,
       storage_path: storagePath,
       sort_order: count || 0,
       size: file.size
@@ -879,9 +886,7 @@ export async function removeVideoFromBoard(boardId: string, videoId: string) {
   if (!row) return;
 
   await deleteR2File(row.storage_path, { mediaId: row.id, boardId });
-  const thumbKey =
-    r2KeyFromPublicUrl(row.thumbnail_url) ||
-    (row.id ? `thumbnails/${row.id}-thumb.webp` : null);
+  const thumbKey = r2KeyFromPublicUrl(row.thumbnail_url);
   if (thumbKey) {
     await deleteR2File(thumbKey, { mediaId: row.id, boardId });
   }
@@ -1096,12 +1101,13 @@ export async function resolveHeroFrameDisplayUrl(
 
 /**
  * Upload a local blob/data URL (or remote image) into Cloudflare R2 and return its public URL.
- * Hero mood frames use `hero-frames/{boardId}-{timestamp}.jpg`.
+ * Hero mood frames use `hero-frames/board-{boardId}-{timestamp}.webp`.
+ * Other assets use `originals/board-{boardId}/{filename}`.
  */
 export async function uploadBoardAsset(
   boardId: string,
   source: string | Blob,
-  fileName = 'hero-frame.jpg',
+  fileName = 'hero-frame.webp',
   opts?: { heroFrame?: boolean }
 ): Promise<{ path: string; publicUrl: string }> {
   await requireUserId();
@@ -1121,23 +1127,30 @@ export async function uploadBoardAsset(
   }
 
   blob = await normalizeHeroImageBlob(blob);
-  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const isHero = opts?.heroFrame !== false && /hero-frame/i.test(safeName);
+  const { originalObjectKey, heroFrameObjectKey, safeR2FileName } = await import('./r2Paths');
+  const isHero = opts?.heroFrame === true || /hero-frame/i.test(fileName);
+
   let path: string;
+  let contentType: string;
+  let uploadName: string;
+
   if (isHero) {
-    const { heroFrameObjectKey } = await import('./thumbnails');
+    const { encodeImageBlobAsWebp } = await import('./thumbnails');
+    blob = await encodeImageBlobAsWebp(blob);
     path = heroFrameObjectKey(boardId);
+    contentType = 'image/webp';
+    uploadName = 'hero-frame.webp';
   } else {
-    const userId = await requireUserId();
-    path = `${userId}/${boardId}/${safeName}`;
+    uploadName = safeR2FileName(fileName);
+    path = originalObjectKey(boardId, uploadName);
+    contentType = blob.type || 'application/octet-stream';
   }
-  const contentType = blob.type || 'image/jpeg';
 
   console.log('[boards] uploadBoardAsset → R2', { path, contentType, size: blob.size });
 
   const signed = await requestPresignedUpload({
     boardId,
-    fileName: safeName,
+    fileName: uploadName,
     contentType,
     fileSize: blob.size || 1,
     fileKey: path,
@@ -1166,7 +1179,7 @@ export async function saveBoardHero(
     const { path, publicUrl: publicHeroUrl } = await uploadBoardAsset(
       boardId,
       frameDataUrl,
-      'hero-frame.jpg',
+      'hero-frame.webp',
       { heroFrame: true }
     );
 

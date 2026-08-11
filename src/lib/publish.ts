@@ -73,7 +73,7 @@ async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
 
   // 3) Local blob/data — upload into hero-frames/
   if (board.heroFrameUrl && isLocalMediaUrl(board.heroFrameUrl)) {
-    const uploaded = await uploadBoardAsset(board.id, board.heroFrameUrl, 'hero-frame.jpg', {
+    const uploaded = await uploadBoardAsset(board.id, board.heroFrameUrl, 'hero-frame.webp', {
       heroFrame: true
     });
     if (uploaded?.publicUrl) {
@@ -84,7 +84,7 @@ async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
   // 4) Download stored hero bytes and upload to R2
   const heroBlob = await getHeroFrameBlob(board.id);
   if (heroBlob) {
-    const uploaded = await uploadBoardAsset(board.id, heroBlob, 'hero-frame.jpg', {
+    const uploaded = await uploadBoardAsset(board.id, heroBlob, 'hero-frame.webp', {
       heroFrame: true
     });
     return uploaded.publicUrl;

@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireApiUser, getOrCreateProfileRow } from '../../../lib/apiAuth';
 import { PLAN_STORAGE_BYTES, isPlanTier, type PlanTier } from '../../../lib/plans';
 import { createPresignedPutUrl, r2PublicUrl } from '../../../lib/r2';
+import { isBoardScopedR2Key, originalObjectKey, safeR2FileName } from '../../../lib/r2Paths';
 import { supabaseAdmin } from '../../../lib/supabaseAdmin';
 
 async function getUsedBytes(userId: string) {
@@ -13,31 +14,20 @@ async function getUsedBytes(userId: string) {
   return (data || []).reduce((sum, row: any) => sum + (Number(row.size) || 0), 0);
 }
 
-function safeFileName(name: string) {
-  return (name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
-/** Allowed R2 key patterns for an owned board. */
+/** Allowed R2 key patterns for an owned board (unified prefixes + legacy). */
 function isAllowedFileKey(opts: {
   fileKey: string;
   userId: string;
   boardId: string;
-  mediaId?: string | null;
 }) {
   const key = opts.fileKey;
+  if (isBoardScopedR2Key(key, opts.boardId)) return true;
+
+  // Legacy keys from earlier migrations
   const userBoardPrefix = `${opts.userId}/${opts.boardId}/`;
   if (key.startsWith(userBoardPrefix)) return true;
-
-  // thumbnails/{mediaId}-thumb.webp
-  const thumbMatch = /^thumbnails\/([a-zA-Z0-9_-]+)-thumb\.webp$/.exec(key);
-  if (thumbMatch) {
-    if (opts.mediaId && thumbMatch[1] !== opts.mediaId) return false;
-    return true;
-  }
-
-  // hero-frames/{boardId}-{timestamp}.jpg
-  const heroPrefix = `hero-frames/${opts.boardId}-`;
-  if (key.startsWith(heroPrefix) && /\.(jpe?g|webp|png)$/i.test(key)) return true;
+  if (/^thumbnails\/[a-zA-Z0-9_-]+-thumb\.webp$/.test(key)) return true;
+  if (key.startsWith(`hero-frames/${opts.boardId}-`)) return true;
 
   return false;
 }
@@ -61,7 +51,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       typeof req.body?.mediaId === 'string' && req.body.mediaId.trim()
         ? req.body.mediaId.trim()
         : null;
-    const skipQuota = req.body?.skipQuota === true || req.body?.purpose === 'thumbnail';
+    const purpose =
+      typeof req.body?.purpose === 'string' ? String(req.body.purpose) : 'media';
+    const skipQuota =
+      req.body?.skipQuota === true || purpose === 'thumbnail' || purpose === 'hero';
 
     if (!boardId) {
       return res.status(400).json({ error: 'boardId is required' });
@@ -106,24 +99,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 
-    const prefix = `${user.id}/${boardId}/`;
     let fileKey: string;
     const requestedKey =
       typeof req.body?.fileKey === 'string' ? req.body.fileKey.trim().replace(/^\/+/, '') : '';
     if (requestedKey) {
-      if (
-        !isAllowedFileKey({
-          fileKey: requestedKey,
-          userId: user.id,
-          boardId,
-          mediaId: id
-        })
-      ) {
+      if (!isAllowedFileKey({ fileKey: requestedKey, userId: user.id, boardId })) {
         return res.status(403).json({ error: 'Invalid file key for this board' });
       }
       fileKey = requestedKey;
+    } else if (purpose === 'thumbnail') {
+      fileKey = `thumbnails/board-${boardId}/${safeR2FileName(fileName)}`;
+    } else if (purpose === 'hero') {
+      fileKey = `hero-frames/board-${boardId}-${Date.now()}.webp`;
     } else {
-      fileKey = `${prefix}${id}-${safeFileName(fileName)}`;
+      // Default originals: originals/board-{id}/{mediaId}-{filename}
+      fileKey = originalObjectKey(boardId, `${id}-${safeR2FileName(fileName)}`);
     }
 
     const signed = await createPresignedPutUrl({

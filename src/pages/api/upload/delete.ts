@@ -1,13 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireApiUser } from '../../../lib/apiAuth';
 import { deleteR2Object } from '../../../lib/r2';
+import { isBoardScopedR2Key } from '../../../lib/r2Paths';
 import { supabaseAdmin } from '../../../lib/supabaseAdmin';
 
 function isAllowedDeleteKey(fileKey: string, userId: string, boardId?: string | null) {
+  if (boardId && isBoardScopedR2Key(fileKey, boardId)) return true;
   if (fileKey.startsWith(`${userId}/`)) return true;
-  if (/^thumbnails\/[a-zA-Z0-9_-]+-thumb\.webp$/.test(fileKey)) return true;
-  if (boardId && fileKey.startsWith(`hero-frames/${boardId}-`)) return true;
-  if (/^hero-frames\/.+/.test(fileKey)) return true;
+  if (fileKey.startsWith('originals/board-')) return true;
+  if (fileKey.startsWith('thumbnails/')) return true;
+  if (fileKey.startsWith('hero-frames/')) return true;
   return false;
 }
 
@@ -27,6 +29,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const mediaId = typeof req.body?.mediaId === 'string' ? req.body.mediaId.trim() : '';
     const boardId = typeof req.body?.boardId === 'string' ? req.body.boardId.trim() : '';
 
+    let ownedBoardId = boardId || null;
+
     if (mediaId) {
       const { data: row } = await supabaseAdmin
         .from('fp_board_media')
@@ -37,6 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!row) {
         return res.status(404).json({ error: 'Media not found' });
       }
+      ownedBoardId = String(row.board_id);
     } else if (boardId) {
       const { data: board } = await supabaseAdmin
         .from('vision_boards')
@@ -51,7 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    if (!isAllowedDeleteKey(fileKey, user.id, boardId || null)) {
+    if (!isAllowedDeleteKey(fileKey, user.id, ownedBoardId)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 

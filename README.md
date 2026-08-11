@@ -60,9 +60,9 @@ Pricing UI: `/pricing`
 
 - **Sign up / Sign in** → Supabase Auth
 - **Boards** → `vision_boards` table (per user)
-- **Videos & images** → Cloudflare R2 (presigned PUT) + metadata rows in `fp_board_media` (`storage_path`, `original_url` / `public_url`, `thumbnail_url`, `size`)
-- **Thumbnails** → client-generated WebP at `thumbnails/{mediaId}-thumb.webp`
-- **Hero mood frames** → R2 `hero-frames/{boardId}-{timestamp}.jpg` + `vision_boards.hero_image_url`
+- **Videos & images** → Cloudflare R2 under `originals/board-{id}/…` + metadata in `fp_board_media` (`storage_path`, `original_url`, `thumbnail_url`, `size`)
+- **Thumbnails** → client-generated WebP at `thumbnails/board-{id}/{filename}-thumb.webp`
+- **Hero mood frames** → R2 `hero-frames/board-{id}-{timestamp}.webp` + `vision_boards.hero_image_url`
 - **Published client links** → `published_boards` (+ `/v/[publicId]`)
 - **Subscriptions** → `profiles` (plan_tier, storage_limit_bytes, Stripe IDs)
 
