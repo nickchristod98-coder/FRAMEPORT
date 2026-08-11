@@ -16,6 +16,8 @@ export type GalleryMediaItem = {
   /** Full-resolution / original URL */
   url: string;
   thumbnailUrl?: string | null;
+  /** Session-only blob URL — preferred for previews during upload/interaction */
+  localObjectUrl?: string | null;
   size?: number | null;
 };
 
@@ -64,7 +66,7 @@ export default function ProjectMediaGallery({
     () =>
       items.filter(
         (item) =>
-          !!item.url &&
+          (!!item.localObjectUrl || !!item.url) &&
           (isImageMime(item.mimeType) || isVideoMime(item.mimeType) || !item.mimeType)
       ),
     [items]
@@ -98,7 +100,10 @@ export default function ProjectMediaGallery({
     setActionError(null);
     setDownloadingId(item.id);
     try {
-      await downloadAsset({ name: item.name, url: fullResolutionUrl(item.url) || item.url });
+      await downloadAsset({
+        name: item.name,
+        url: item.localObjectUrl || fullResolutionUrl(item.url) || item.url
+      });
     } catch (err: any) {
       console.error('[gallery] download failed', err);
       setActionError(err?.message || 'Download failed');
@@ -117,7 +122,7 @@ export default function ProjectMediaGallery({
       await downloadAssetsAsZip(
         targets.map((item) => ({
           name: item.name,
-          url: fullResolutionUrl(item.url) || item.url
+          url: item.localObjectUrl || fullResolutionUrl(item.url) || item.url
         })),
         `${zipBaseName}.zip`,
         (p) => setZipPercent(p.percent)
@@ -192,10 +197,12 @@ export default function ProjectMediaGallery({
           {filtered.map((item) => {
             const isImage = isImageMime(item.mimeType);
             const isVideo = isVideoMime(item.mimeType);
-            const fullUrl = fullResolutionUrl(item.url) || item.url;
+            const fullUrl =
+              item.localObjectUrl || fullResolutionUrl(item.url) || item.url;
             const thumb = thumbFallback[item.id]
               ? fullUrl
               : resolveGridThumbnailUrl({
+                  localObjectUrl: item.localObjectUrl,
                   thumbnailUrl: item.thumbnailUrl,
                   originalUrl: item.url,
                   mimeType: item.mimeType
@@ -212,9 +219,26 @@ export default function ProjectMediaGallery({
                   className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
                   aria-label={`Open ${item.name}`}
                 >
-                  {isImage || (isVideo && item.thumbnailUrl && !thumbFallback[item.id]) ? (
+                  {isImage ? (
                     <BlurUpImage
-                      src={thumb}
+                      src={item.localObjectUrl || thumb}
+                      alt={item.name}
+                      className="block h-auto w-full group-hover:brightness-110"
+                      onError={() => {
+                        setThumbFallback((prev) => ({ ...prev, [item.id]: true }));
+                      }}
+                    />
+                  ) : isVideo && item.localObjectUrl ? (
+                    <video
+                      src={item.localObjectUrl}
+                      className="pointer-events-none block h-auto w-full"
+                      muted
+                      playsInline
+                      preload="metadata"
+                    />
+                  ) : isVideo && item.thumbnailUrl && !thumbFallback[item.id] ? (
+                    <BlurUpImage
+                      src={item.thumbnailUrl}
                       alt={item.name}
                       className="block h-auto w-full group-hover:brightness-110"
                       onError={() => {
@@ -294,13 +318,13 @@ export default function ProjectMediaGallery({
               {isImageMime(active.mimeType) ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={fullResolutionUrl(active.url) || active.url}
+                  src={active.localObjectUrl || fullResolutionUrl(active.url) || active.url}
                   alt={active.name}
                   className="max-h-[70vh] w-auto max-w-full object-contain"
                 />
               ) : (
                 <video
-                  src={fullResolutionUrl(active.url) || active.url}
+                  src={active.localObjectUrl || fullResolutionUrl(active.url) || active.url}
                   className="max-h-[70vh] w-auto max-w-full"
                   controls
                   autoPlay

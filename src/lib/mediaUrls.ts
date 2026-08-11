@@ -21,13 +21,18 @@ export function fullResolutionUrl(url: string | null | undefined): string | null
 }
 
 /**
- * Prefer a stored R2 thumbnail URL; fall back to legacy transform helpers.
+ * Prefer a session-local blob URL (upload/interaction), then stored R2 thumbnail,
+ * then original. Never converts remote URLs into blobs — callers use the string as img/video src.
  */
 export function resolveGridThumbnailUrl(opts: {
+  localObjectUrl?: string | null;
   thumbnailUrl?: string | null;
   originalUrl?: string | null;
   mimeType?: string | null;
 }): string | null {
+  if (opts.localObjectUrl?.startsWith('blob:') || opts.localObjectUrl?.startsWith('data:')) {
+    return opts.localObjectUrl;
+  }
   if (opts.thumbnailUrl && /^https?:\/\//i.test(opts.thumbnailUrl)) {
     return opts.thumbnailUrl.split('?')[0];
   }

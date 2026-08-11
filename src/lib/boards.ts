@@ -5,9 +5,11 @@ export type BoardVideo = {
   id: string;
   name: string;
   mimeType: string;
-  /** Full-resolution / original public URL */
+  /** Full-resolution / original public URL (R2 string reference — do not fetch client-side) */
   url: string;
   thumbnailUrl?: string | null;
+  /** Session-only blob: URL from URL.createObjectURL(file) — never persisted */
+  localObjectUrl?: string | null;
   storagePath?: string;
   sortOrder?: number;
   size?: number | null;
@@ -605,6 +607,7 @@ export async function getBoard(id: string): Promise<Board | null> {
     .order('created_at', { ascending: true });
   throwIfError(mediaErr, 'getBoard.media');
 
+  const { getLocalMediaObjectUrl } = await import('./localMedia');
   const videos: BoardVideo[] = await Promise.all(
     (mediaRows || []).map(async (m: any) => {
       const original =
@@ -632,7 +635,8 @@ export async function getBoard(id: string): Promise<Board | null> {
         size: typeof m.size === 'number' ? m.size : Number(m.size) || null,
         createdAt: m.created_at || null,
         url,
-        thumbnailUrl: thumb
+        thumbnailUrl: thumb,
+        localObjectUrl: getLocalMediaObjectUrl(m.id)
       };
     })
   );
@@ -850,6 +854,9 @@ export async function addVideoToBoard(
     }
     throwIfError(error, 'addVideoToBoard.insert');
 
+    const { rememberLocalFile, getLocalMediaObjectUrl } = await import('./localMedia');
+    const localObjectUrl = rememberLocalFile(row.id, file);
+
     return {
       id: row.id,
       name: row.filename,
@@ -862,7 +869,8 @@ export async function addVideoToBoard(
         (typeof row.public_url === 'string' && row.public_url) ||
         originalUrl,
       thumbnailUrl:
-        (typeof row.thumbnail_url === 'string' && row.thumbnail_url) || thumbnailUrl || null
+        (typeof row.thumbnail_url === 'string' && row.thumbnail_url) || thumbnailUrl || null,
+      localObjectUrl: localObjectUrl || getLocalMediaObjectUrl(row.id)
     };
   } catch (err) {
     if (err instanceof UploadCancelledError || (err as any)?.name === 'UploadCancelledError') {
@@ -875,6 +883,8 @@ export async function addVideoToBoard(
 
 export async function removeVideoFromBoard(boardId: string, videoId: string) {
   const userId = await requireUserId();
+  const { clearLocalMediaObjectUrl } = await import('./localMedia');
+  clearLocalMediaObjectUrl(videoId);
   const { data: row, error } = await supabase
     .from('fp_board_media')
     .select('*')
@@ -931,64 +941,75 @@ export type PlayableMediaSource = {
 };
 
 /**
- * Resolve a playable video/image src for the mood-frame picker.
- * Always prefers URL.createObjectURL(blob) from the high-res original
- * so scrubbing + canvas capture avoid CORS/network issues.
+ * Resolve a playable <video>/<img> src for the mood-frame picker.
+ * Prefers a session-local blob: URL (from the selected File).
+ * Never fetch()es remote R2 URLs — that triggers CORS / ERR_CONNECTION_REFUSED.
+ * Videos require a local blob for scrubbing/canvas capture.
+ * Photos may use a stored public URL as a direct <img src> string only.
  */
 export async function resolvePlayableMediaSource(
-  media: Pick<BoardVideo, 'storagePath' | 'url' | 'name' | 'mimeType'>
+  media: Pick<BoardVideo, 'storagePath' | 'url' | 'name' | 'mimeType' | 'localObjectUrl' | 'id'>
 ): Promise<PlayableMediaSource> {
-  const publicSrc =
-    (isValidHttpUrl(media.url) ? media.url.split('?')[0] : null) ||
-    getBoardAssetPublicUrl(media.storagePath);
+  const { getLocalMediaObjectUrl } = await import('./localMedia');
+  const local =
+    (media.localObjectUrl && isLocalMediaUrl(media.localObjectUrl) ? media.localObjectUrl : null) ||
+    getLocalMediaObjectUrl(media.id);
 
   console.log('[mood-frame] resolve source input', {
     name: media.name,
     mimeType: media.mimeType,
     storagePath: media.storagePath || null,
-    publicUrl: publicSrc || null
+    localObjectUrl: local || null,
+    publicUrl: media.url || null
   });
 
-  if (!publicSrc) {
+  if (local) {
+    return { src: local, kind: 'blob' };
+  }
+
+  const publicSrc =
+    (isValidHttpUrl(media.url) ? media.url.split('?')[0] : null) ||
+    getBoardAssetPublicUrl(media.storagePath);
+
+  const isVideo = !!media.mimeType?.startsWith('video/');
+  if (isVideo) {
     throw new Error(
-      `Could not resolve a playable URL for "${media.name || 'media'}". Check NEXT_PUBLIC_R2_PUBLIC_URL and that the object exists in R2.`
+      `No local preview for "${media.name || 'this video'}". Re-select or re-upload the file to scrub frames (remote R2 URLs are not loaded in the browser).`
     );
   }
 
-  // Required path: fetch original → blob: URL for <video>/<img> + canvas
-  try {
-    const res = await fetch(publicSrc);
-    if (!res.ok) {
-      throw new Error(`Fetch failed (${res.status})`);
-    }
-    const blob = await res.blob();
-    const src = URL.createObjectURL(blob);
-    console.log('[mood-frame] <video> src (blob from R2 original):', src);
-    return {
-      src,
-      kind: 'blob',
-      revoke: () => URL.revokeObjectURL(src)
-    };
-  } catch (err: any) {
-    console.warn('[mood-frame] R2 fetch→blob failed, using public URL directly', err?.message);
+  if (publicSrc) {
+    // Direct <img src> only — do NOT fetch() into a blob
     return { src: publicSrc, kind: 'public' };
   }
+
+  throw new Error(
+    `Could not resolve a playable URL for "${media.name || 'media'}". Re-select the file so a local preview is available.`
+  );
 }
 
-export async function downloadMediaBlob(media: Pick<BoardVideo, 'storagePath' | 'url'>): Promise<Blob | null> {
+/**
+ * Read bytes only from local blob:/data: sources.
+ * Never fetch()es remote R2 URLs from the browser.
+ */
+export async function downloadMediaBlob(
+  media: Pick<BoardVideo, 'storagePath' | 'url' | 'localObjectUrl' | 'id'>
+): Promise<Blob | null> {
   try {
-    const url =
-      (isValidHttpUrl(media.url) ? media.url.split('?')[0] : null) ||
-      getBoardAssetPublicUrl(media.storagePath);
-    if (!url) return null;
+    const { getLocalMediaObjectUrl } = await import('./localMedia');
+    const local =
+      (media.localObjectUrl && isLocalMediaUrl(media.localObjectUrl) ? media.localObjectUrl : null) ||
+      getLocalMediaObjectUrl(media.id);
 
-    console.log('[mood-frame] downloadMediaBlob url:', url);
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.error('[mood-frame] downloadMediaBlob fetch failed', res.status);
-      return null;
+    if (local?.startsWith('blob:') || local?.startsWith('data:')) {
+      const res = await fetch(local);
+      if (!res.ok) return null;
+      return await res.blob();
     }
-    return await res.blob();
+
+    // Intentionally skip remote http(s) — client must not fetch R2
+    console.warn('[mood-frame] downloadMediaBlob skipped remote URL (use local file)');
+    return null;
   } catch (err: any) {
     console.error('[mood-frame] downloadMediaBlob failed safely', {
       message: err?.message,
@@ -1059,7 +1080,7 @@ async function normalizeHeroImageBlob(input: Blob): Promise<Blob> {
 
 /**
  * Resolve a permanent public mood-frame URL from Cloudflare R2 (never blob:/data:).
- * Prefers a stored hero_image_url when provided as path-or-url.
+ * Does not fetch/HEAD remote R2 — returns the string URL only.
  */
 export async function resolveHeroFrameDisplayUrl(
   pathOrUrl: string | null | undefined
@@ -1072,31 +1093,7 @@ export async function resolveHeroFrameDisplayUrl(
   }
 
   const pub = publicUrl(clean);
-  if (!pub) return null;
-
-  try {
-    const head = await fetch(pub, { method: 'HEAD' });
-    if (head.ok) return withCacheBust(pub);
-  } catch {
-    // fall through — still return public URL; CDN may block HEAD
-  }
-
-  // Try to detect / repair legacy base64-stored JPEGs
-  try {
-    const res = await fetch(pub);
-    if (!res.ok) return withCacheBust(pub);
-    const data = await res.blob();
-    const normalized = await normalizeHeroImageBlob(data);
-    const rawHead = new Uint8Array(await data.slice(0, 4).arrayBuffer());
-    if (!isJpegBinary(rawHead)) {
-      const objectUrl = URL.createObjectURL(normalized);
-      return objectUrl;
-    }
-  } catch (err) {
-    console.error('[boards] resolveHeroFrameDisplayUrl threw', err);
-  }
-
-  return withCacheBust(pub);
+  return pub ? withCacheBust(pub) : null;
 }
 
 /**
@@ -1115,10 +1112,15 @@ export async function uploadBoardAsset(
   if (typeof source === 'string') {
     if (source.startsWith('data:')) {
       blob = dataUrlToBlob(source);
-    } else if (source.startsWith('blob:') || isValidHttpUrl(source)) {
+    } else if (source.startsWith('blob:')) {
+      // Local memory only — never fetch http(s) R2 URLs from the browser
       const res = await fetch(source);
       if (!res.ok) throw new Error('Could not read local image for upload.');
       blob = await res.blob();
+    } else if (isValidHttpUrl(source)) {
+      throw new Error(
+        'Cannot re-download remote media in the browser. Use a local file or an already-captured data URL.'
+      );
     } else {
       throw new Error('Unsupported image source for board asset upload.');
     }
@@ -1280,18 +1282,19 @@ export async function getBoardMediaBlob(boardId: string, videoId: string): Promi
 
 export async function getHeroFrameBlob(boardId: string): Promise<Blob | null> {
   const board = await getBoard(boardId);
-  const url =
-    (board?.heroFrameUrl && !isLocalMediaUrl(board.heroFrameUrl) ? board.heroFrameUrl.split('?')[0] : null) ||
-    getBoardAssetPublicUrl(board?.heroFramePath);
-  if (!url) return null;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return normalizeHeroImageBlob(await res.blob());
-  } catch (err) {
-    console.error('[boards] getHeroFrameBlob fetch failed', err);
-    return null;
+  const url = board?.heroFrameUrl;
+  // Only read local memory — never fetch remote R2 from the browser
+  if (url && isLocalMediaUrl(url)) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return normalizeHeroImageBlob(await res.blob());
+    } catch (err) {
+      console.error('[boards] getHeroFrameBlob local read failed', err);
+      return null;
+    }
   }
+  return null;
 }
 
 export async function getBoardByPublicId(publicId: string) {

@@ -1,24 +1,28 @@
 import { Board, BoardVideo, downloadMediaBlob } from './boards';
 
-/** Prefer saved hero media, else first video/image with a URL. */
+function hasPlayableMediaRef(v: BoardVideo) {
+  return !!(v.localObjectUrl || v.url || v.storagePath);
+}
+
+/** Prefer saved hero media, else first video/image with a local or stored URL. */
 export function pickHeroMedia(board: Board): BoardVideo | null {
-  const withUrl = board.videos.filter((v) => !!v.url);
+  const withSrc = board.videos.filter(hasPlayableMediaRef);
   if (board.hero?.mediaId) {
-    const chosen = withUrl.find((v) => v.id === board.hero?.mediaId);
+    const chosen = withSrc.find((v) => v.id === board.hero?.mediaId);
     if (chosen) return chosen;
   }
   return (
-    withUrl.find((v) => v.mimeType.startsWith('video/')) ||
-    withUrl.find((v) => v.mimeType.startsWith('image/')) ||
-    withUrl[0] ||
+    withSrc.find((v) => v.mimeType.startsWith('video/')) ||
+    withSrc.find((v) => v.mimeType.startsWith('image/')) ||
+    withSrc[0] ||
     null
   );
 }
 
 export function pickRandomVideo(videos: BoardVideo[]): BoardVideo | null {
-  const pool = videos.filter((v) => v.mimeType.startsWith('video/') && (v.url || v.storagePath));
+  const pool = videos.filter((v) => v.mimeType.startsWith('video/') && hasPlayableMediaRef(v));
   if (!pool.length) {
-    const images = videos.filter((v) => v.mimeType.startsWith('image/') && (v.url || v.storagePath));
+    const images = videos.filter((v) => v.mimeType.startsWith('image/') && hasPlayableMediaRef(v));
     if (!images.length) return null;
     return images[Math.floor(Math.random() * images.length)];
   }
@@ -29,7 +33,7 @@ export function pickRandomVideo(videos: BoardVideo[]): BoardVideo | null {
 export function pickRandomHeroSource(videos: BoardVideo[]): BoardVideo | null {
   const pool = videos.filter(
     (v) =>
-      (!!v.url || !!v.storagePath) &&
+      hasPlayableMediaRef(v) &&
       (v.mimeType.startsWith('video/') || v.mimeType.startsWith('image/'))
   );
   if (!pool.length) return null;
@@ -139,16 +143,14 @@ async function resolvePlayableSrc(media: BoardVideo): Promise<{ src: string; rev
       message: err?.message,
       err,
       url: media.url,
+      localObjectUrl: media.localObjectUrl,
       storagePath: media.storagePath
     });
-    if (media.url) {
-      console.log('[mediaFrame] falling back to public URL:', media.url);
-      return { src: media.url, kind: 'public' };
+    if (media.localObjectUrl) {
+      return { src: media.localObjectUrl, kind: 'blob' };
     }
     throw new Error(
-      err?.message === 'Failed to fetch'
-        ? 'Could not load video (network/CORS). Check console for the exact URL.'
-        : err?.message || 'Could not resolve video URL.'
+      err?.message || 'Could not resolve a local media preview. Re-select the file to scrub frames.'
     );
   }
 }
@@ -242,23 +244,25 @@ export async function extractMediaFrameAt(
   time = 0
 ): Promise<string | null> {
   try {
-    if (!media.url && !media.storagePath) return null;
+    if (!media.localObjectUrl && !media.url && !media.storagePath) return null;
 
     if (media.mimeType.startsWith('image/')) {
+      // Prefer local blob; otherwise use stored URL as img src (no fetch→blob)
       try {
         const blob = await downloadMediaBlob(media);
         if (blob) {
           return await new Promise((resolve) => {
             const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : media.url);
-            reader.onerror = () => resolve(media.url);
+            reader.onload = () =>
+              resolve(typeof reader.result === 'string' ? reader.result : media.localObjectUrl || media.url);
+            reader.onerror = () => resolve(media.localObjectUrl || media.url);
             reader.readAsDataURL(blob);
           });
         }
       } catch (err) {
-        console.error('[mediaFrame] image blob read failed', err);
+        console.error('[mediaFrame] image local blob read failed', err);
       }
-      return media.url || null;
+      return media.localObjectUrl || media.url || null;
     }
 
     const resolved = await resolvePlayableSrc(media);
@@ -266,7 +270,10 @@ export async function extractMediaFrameAt(
       const result = await loadVideoFrame(resolved.src, time);
       return result?.frameDataUrl || null;
     } finally {
-      resolved.revoke?.();
+      // Do not revoke session-local registry URLs
+      if (resolved.kind !== 'blob' || resolved.src !== media.localObjectUrl) {
+        resolved.revoke?.();
+      }
     }
   } catch (err: any) {
     console.error('[mediaFrame] extractMediaFrameAt failed', err);
@@ -279,7 +286,7 @@ export async function extractRandomHdFrame(
   media: BoardVideo
 ): Promise<{ frameDataUrl: string; time: number } | null> {
   try {
-    if (!media.url && !media.storagePath) return null;
+    if (!media.localObjectUrl && !media.url && !media.storagePath) return null;
 
     if (media.mimeType.startsWith('image/')) {
       const frame = await extractMediaFrameAt(media, 0);
@@ -290,7 +297,9 @@ export async function extractRandomHdFrame(
     try {
       return await loadVideoFrame(resolved.src, 'random');
     } finally {
-      resolved.revoke?.();
+      if (resolved.kind !== 'blob' || resolved.src !== media.localObjectUrl) {
+        resolved.revoke?.();
+      }
     }
   } catch (err: any) {
     console.error('[mediaFrame] extractRandomHdFrame failed', err);
@@ -307,18 +316,25 @@ export async function extractInitialHeroFrame(
   media: BoardVideo
 ): Promise<{ frameDataUrl: string; time: number } | null> {
   try {
-    if (!media.url && !media.storagePath) return null;
+    if (!media.localObjectUrl && !media.url && !media.storagePath) return null;
 
     if (media.mimeType.startsWith('image/')) {
       const frame = await extractMediaFrameAt(media, 0);
-      return frame ? { frameDataUrl: frame, time: 0 } : null;
+      // Only accept local/data captures for upload — remote URL strings cannot be re-fetched
+      if (!frame) return null;
+      if (frame.startsWith('data:') || frame.startsWith('blob:')) {
+        return { frameDataUrl: frame, time: 0 };
+      }
+      return null;
     }
 
     const resolved = await resolvePlayableSrc(media);
     try {
       return await loadVideoFrame(resolved.src, 0.001);
     } finally {
-      resolved.revoke?.();
+      if (resolved.kind !== 'blob' || resolved.src !== media.localObjectUrl) {
+        resolved.revoke?.();
+      }
     }
   } catch (err: any) {
     console.error('[mediaFrame] extractInitialHeroFrame failed', err);

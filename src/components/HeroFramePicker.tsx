@@ -35,7 +35,7 @@ export default function HeroFramePicker({
 
   const [filter, setFilter] = useState<SourceFilter>('all');
   const mediaOptions = useMemo(() => {
-    const withSrc = localVideos.filter((v) => !!v.url || !!v.storagePath);
+    const withSrc = localVideos.filter((v) => !!v.localObjectUrl || !!v.url || !!v.storagePath);
     if (filter === 'photos') return withSrc.filter((v) => isImageMime(v.mimeType));
     if (filter === 'videos') return withSrc.filter((v) => isVideoMime(v.mimeType));
     return withSrc;
@@ -71,10 +71,9 @@ export default function HeroFramePicker({
     if (!mediaId && mediaOptions[0]) setMediaId(mediaOptions[0].id);
   }, [mediaOptions, mediaId]);
 
-  // Resolve playable src — prefer blob: from original_url for CORS-safe canvas capture
+  // Resolve playable src — prefer session-local blob: (never fetch remote R2)
   useEffect(() => {
     let cancelled = false;
-    const prev = playableUrlRef.current;
 
     async function loadSource() {
       setReady(false);
@@ -95,12 +94,12 @@ export default function HeroFramePicker({
           return;
         }
 
+        // Registry owns blob: URLs — do not revoke them here
         playableUrlRef.current = resolved.kind === 'blob' ? resolved.src : null;
         setSourceKind(resolved.kind);
         setPlayableSrc(resolved.src);
 
         if (!isVideoMime(selected.mimeType)) {
-          // High-res photo preview — use blob or original URL
           setPreview(resolved.src);
           setReady(true);
         }
@@ -108,7 +107,7 @@ export default function HeroFramePicker({
         console.error('[HeroFramePicker] source load failed', err);
         const message =
           err?.message === 'Failed to fetch'
-            ? 'Could not load this file. Check R2 CORS allows GET from this origin.'
+            ? 'Could not load this file from local memory. Re-select the file.'
             : err?.message || 'Could not load media.';
         if (!cancelled) setError(message);
       } finally {
@@ -120,7 +119,6 @@ export default function HeroFramePicker({
 
     return () => {
       cancelled = true;
-      if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
@@ -153,7 +151,7 @@ export default function HeroFramePicker({
             setError(
               sourceKind === 'blob'
                 ? 'Could not capture this frame. Try another position.'
-                : 'Frame capture blocked by CORS. Enable CORS on the R2 bucket, or reload so a local blob source is used.'
+                : 'Frame capture needs a local file preview. Re-select or re-upload the video.'
             );
             setReady(false);
           }
@@ -173,7 +171,7 @@ export default function HeroFramePicker({
         message: mediaError?.message
       });
       setError(
-        `Video failed to load. ${mediaError?.message || 'Check R2 public access / CORS.'}`
+        `Video failed to load. ${mediaError?.message || 'Try re-selecting the local file.'}`
       );
       setReady(false);
     };
@@ -216,7 +214,7 @@ export default function HeroFramePicker({
       return;
     }
 
-    // Instant local preview via createObjectURL (no CORS)
+    // Instant local preview via createObjectURL (no remote fetch)
     const localPreview = URL.createObjectURL(file);
     setPreview(localPreview);
     setReady(true);
@@ -227,18 +225,25 @@ export default function HeroFramePicker({
       const added = await onUploadImage(file);
       if (added) {
         setLocalVideos((prev) => {
-          if (prev.some((v) => v.id === added.id)) return prev;
+          if (prev.some((v) => v.id === added.id)) {
+            return prev.map((v) => (v.id === added.id ? { ...v, ...added } : v));
+          }
           return [...prev, added];
         });
         setMediaId(added.id);
         setFilter('photos');
+        // Prefer the session registry URL from upload; drop the temporary preview URL
+        if (added.localObjectUrl) {
+          setPreview(added.localObjectUrl);
+          URL.revokeObjectURL(localPreview);
+        }
       }
     } catch (err: any) {
       setError(err?.message || 'Image upload failed');
       setReady(false);
+      URL.revokeObjectURL(localPreview);
     } finally {
       setUploading(false);
-      // Keep local preview until the selected source reloads; revoke later via effect cleanup
     }
   }
 
@@ -247,21 +252,26 @@ export default function HeroFramePicker({
     setSaving(true);
     setError(null);
     try {
-      // Prefer a durable data URL / http URL for R2 upload (blob: may be revoked)
+      // Convert local blob:/data: into a durable data URL for R2 upload — never fetch http(s)
       let frameDataUrl = preview;
-      if (preview.startsWith('blob:') && isPhoto && playableSrc) {
-        try {
-          const res = await fetch(playableSrc.startsWith('blob:') ? playableSrc : preview);
-          const blob = await res.blob();
-          frameDataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () =>
-              resolve(typeof reader.result === 'string' ? reader.result : preview);
-            reader.onerror = () => reject(new Error('Could not read frame'));
-            reader.readAsDataURL(blob);
-          });
-        } catch {
-          // fall through with preview
+      if (preview.startsWith('blob:') || (playableSrc?.startsWith('blob:') && isPhoto)) {
+        const localSrc =
+          (playableSrc?.startsWith('blob:') ? playableSrc : null) ||
+          (preview.startsWith('blob:') ? preview : null);
+        if (localSrc) {
+          try {
+            const res = await fetch(localSrc);
+            const blob = await res.blob();
+            frameDataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () =>
+                resolve(typeof reader.result === 'string' ? reader.result : preview);
+              reader.onerror = () => reject(new Error('Could not read frame'));
+              reader.readAsDataURL(blob);
+            });
+          } catch {
+            // fall through with preview / data URL from canvas capture
+          }
         }
       }
 
@@ -356,12 +366,19 @@ export default function HeroFramePicker({
                 </p>
               )}
               {mediaOptions.map((v) => {
-                const thumb =
-                  resolveGridThumbnailUrl({
-                    thumbnailUrl: v.thumbnailUrl,
-                    originalUrl: v.url,
-                    mimeType: v.mimeType
-                  }) || v.url;
+                const isVid = isVideoMime(v.mimeType);
+                const thumb = isVid
+                  ? v.thumbnailUrl && !v.localObjectUrl
+                    ? v.thumbnailUrl
+                    : null
+                  : resolveGridThumbnailUrl({
+                      localObjectUrl: v.localObjectUrl,
+                      thumbnailUrl: v.thumbnailUrl,
+                      originalUrl: v.url,
+                      mimeType: v.mimeType
+                    }) ||
+                    v.localObjectUrl ||
+                    v.url;
                 const active = v.id === mediaId;
                 return (
                   <button
@@ -374,7 +391,15 @@ export default function HeroFramePicker({
                     }`}
                   >
                     <div className="h-12 w-12 shrink-0 overflow-hidden bg-white/10">
-                      {thumb ? (
+                      {isVid && v.localObjectUrl ? (
+                        <video
+                          src={v.localObjectUrl}
+                          className="h-full w-full object-cover"
+                          muted
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : thumb ? (
                         <BlurUpImage
                           src={thumb}
                           alt=""

@@ -18,11 +18,22 @@ async function fetchAsBlob(url: string): Promise<Blob> {
   return res.blob();
 }
 
-/** Trigger a browser download of one full-resolution file. */
 export async function downloadAsset(asset: DownloadableAsset): Promise<void> {
   const url = fullResolutionUrl(asset.url) || asset.url;
-  const blob = await fetchAsBlob(url);
-  saveAs(blob, safeFileName(asset.name));
+  if (url.startsWith('blob:') || url.startsWith('data:')) {
+    const blob = await fetchAsBlob(url);
+    saveAs(blob, safeFileName(asset.name));
+    return;
+  }
+  // Prefer opening/saving via an anchor for remote URLs (avoids CORS fetch when possible)
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = safeFileName(asset.name);
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 export type ZipProgress = {

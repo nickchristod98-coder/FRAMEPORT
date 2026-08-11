@@ -858,19 +858,46 @@ export default function BoardWorkspacePage() {
                   } cursor-grab active:cursor-grabbing`}
                 >
                   <div className="relative bg-black">
-                    {v.url || v.thumbnailUrl ? (
+                    {v.localObjectUrl || v.url || v.thumbnailUrl ? (
                       (() => {
-                        const thumb =
-                          resolveGridThumbnailUrl({
-                            thumbnailUrl: v.thumbnailUrl,
-                            originalUrl: v.url,
-                            mimeType: v.mimeType
-                          }) || v.url;
                         const isImage = v.mimeType.startsWith('image/');
-                        const showThumbImage = isImage || !!v.thumbnailUrl;
-                        return showThumbImage ? (
-                          <BlurUpImage src={thumb} alt={v.name} className="block h-auto w-full" />
-                        ) : (
+                        if (isImage) {
+                          const src =
+                            v.localObjectUrl ||
+                            resolveGridThumbnailUrl({
+                              localObjectUrl: v.localObjectUrl,
+                              thumbnailUrl: v.thumbnailUrl,
+                              originalUrl: v.url,
+                              mimeType: v.mimeType
+                            }) ||
+                            v.url;
+                          return (
+                            <BlurUpImage src={src} alt={v.name} className="block h-auto w-full" />
+                          );
+                        }
+                        // Videos: prefer local blob stream during upload/interaction
+                        if (v.localObjectUrl) {
+                          return (
+                            <video
+                              src={v.localObjectUrl}
+                              className="block h-auto w-full"
+                              muted
+                              playsInline
+                              preload="metadata"
+                              controls={false}
+                            />
+                          );
+                        }
+                        if (v.thumbnailUrl) {
+                          return (
+                            <BlurUpImage
+                              src={v.thumbnailUrl}
+                              alt={v.name}
+                              className="block h-auto w-full"
+                            />
+                          );
+                        }
+                        return (
                           <video
                             src={v.url}
                             className="block h-auto w-full"
