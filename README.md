@@ -1,4 +1,4 @@
-# FramePort (Next.js + Supabase)
+# FramePort (Next.js + Supabase + Cloudflare R2)
 
 Premium vision-board platform for filmmakers.
 
@@ -6,14 +6,21 @@ Premium vision-board platform for filmmakers.
 
 1. `npm install`
 2. Create a Supabase project
-3. Add `.env.local`:
+3. Create a Cloudflare R2 bucket + API token (Object Read & Write), and enable a public URL (custom domain or `r2.dev` public access)
+4. Add `.env.local`:
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET=board_assets
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+
+# Cloudflare R2 (S3-compatible)
+R2_ACCOUNT_ID=your-cloudflare-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key
+R2_SECRET_ACCESS_KEY=your-r2-secret-key
+R2_BUCKET_NAME=your-bucket-name
+NEXT_PUBLIC_R2_PUBLIC_URL=https://your-public-r2-or-custom-domain
 
 # Stripe billing
 STRIPE_SECRET_KEY=sk_test_...
@@ -22,11 +29,10 @@ STRIPE_PRICE_PRO=price_...
 STRIPE_PRICE_MAX=price_...
 ```
 
-4. In Supabase SQL Editor, run:
+5. In Supabase SQL Editor, run:
    - `supabase/frameport_cloud.sql` (boards, media, auth RLS, publish table)
-   - `supabase/migrate_board_assets.sql` (creates public `board_assets` bucket + policies)
    - `supabase/migrate_profiles_billing.sql` (profiles + Stripe plan fields)
-5. In Storage, confirm a **public** bucket named exactly **`board_assets`** exists
+   - `supabase/migrate_board_password.sql` (optional board access passwords)
 6. Auth → Providers: enable Email. For local testing, you can disable “Confirm email”.
 7. Stripe:
    - Create two recurring Prices in EUR: PRO €20/mo and MAX €50/mo
@@ -36,7 +42,8 @@ STRIPE_PRICE_MAX=price_...
      - `checkout.session.completed`
      - `customer.subscription.updated`
      - `customer.subscription.deleted`
-8. `npm run dev`
+8. On the R2 bucket, allow CORS for your app origin (PUT + GET/HEAD) so browser uploads and media playback work
+9. `npm run dev`
 
 ## Plans
 
@@ -52,7 +59,7 @@ Pricing UI: `/pricing`
 
 - **Sign up / Sign in** → Supabase Auth
 - **Boards** → `vision_boards` table (per user)
-- **Videos & images** → Storage bucket `board_assets` + rows in `fp_board_media`
+- **Videos & images** → Cloudflare R2 (presigned PUT) + metadata rows in `fp_board_media` (`storage_path`, `public_url`, `size`)
 - **Published client links** → `published_boards` (+ `/v/[publicId]`)
 - **Subscriptions** → `profiles` (plan_tier, storage_limit_bytes, Stripe IDs)
 

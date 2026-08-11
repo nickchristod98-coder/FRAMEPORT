@@ -34,16 +34,13 @@ export type Board = {
   accessPassword?: string | null;
 };
 
-/**
- * Single public bucket for mood frames, images, and project videos.
- * Must exist in Supabase Storage (Dashboard → Storage → New bucket → name: board_assets → Public).
- */
-const BUCKET =
-  (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET?.trim()) ||
-  'board_assets';
+/** Cloudflare R2 public base URL (no trailing slash). */
+function r2PublicBaseUrl() {
+  return (process.env.NEXT_PUBLIC_R2_PUBLIC_URL || '').replace(/\/+$/, '');
+}
 
 export function getStorageBucketName() {
-  return BUCKET;
+  return process.env.R2_BUCKET_NAME || process.env.NEXT_PUBLIC_R2_BUCKET_NAME || 'r2';
 }
 
 export function isLocalMediaUrl(url: string | null | undefined): boolean {
@@ -169,14 +166,7 @@ export class UploadCancelledError extends Error {
   }
 }
 
-async function uploadFileWithProgress(
-  storagePath: string,
-  file: File,
-  onProgress?: (progress: UploadProgress) => void,
-  signal?: AbortSignal
-) {
-  if (signal?.aborted) throw new UploadCancelledError();
-
+async function getAccessToken() {
   const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
   if (sessionErr) {
     console.error('[boards] getSession', sessionErr);
@@ -184,22 +174,83 @@ async function uploadFileWithProgress(
   }
   const token = sessionData.session?.access_token;
   if (!token) throw new Error('You must be signed in.');
+  return token;
+}
 
-  const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-  if (!base || !anonKey) throw new Error('Supabase is not configured.');
+type PresignedUploadResponse = {
+  uploadUrl: string;
+  fileKey: string;
+  publicUrl: string;
+  mediaId: string;
+  usedBytes?: number;
+  limitBytes?: number;
+  remainingBytes?: number;
+  error?: string;
+};
 
-  const uploadUrl = `${base}/storage/v1/object/${encodeURIComponent(BUCKET)}/${encodeURIComponent(
-    storagePath
-  )}?upsert=true`;
+async function requestPresignedUpload(opts: {
+  boardId: string;
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  mediaId?: string;
+  fileKey?: string;
+}): Promise<PresignedUploadResponse> {
+  const token = await getAccessToken();
+  const res = await fetch('/api/upload/presigned-url', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      boardId: opts.boardId,
+      fileName: opts.fileName,
+      contentType: opts.contentType,
+      fileSize: opts.fileSize,
+      mediaId: opts.mediaId,
+      fileKey: opts.fileKey
+    })
+  });
+
+  let payload: PresignedUploadResponse | null = null;
+  try {
+    payload = (await res.json()) as PresignedUploadResponse;
+  } catch {
+    // ignore
+  }
+
+  if (!res.ok) {
+    const message = payload?.error || `Could not create upload URL (${res.status})`;
+    if (res.status === 403 || isStorageFullError(res.status, message)) {
+      throw new StorageUpgradeRequiredError(
+        message,
+        Number((payload as any)?.usedBytes) || 0,
+        Number((payload as any)?.limitBytes) || storageLimitBytes()
+      );
+    }
+    throw new Error(message);
+  }
+
+  if (!payload?.uploadUrl || !payload.fileKey || !payload.publicUrl) {
+    throw new Error('Invalid presigned upload response');
+  }
+  return payload;
+}
+
+async function putFileToR2(
+  uploadUrl: string,
+  file: Blob,
+  contentType: string,
+  onProgress?: (progress: UploadProgress) => void,
+  signal?: AbortSignal
+) {
+  if (signal?.aborted) throw new UploadCancelledError();
 
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', uploadUrl);
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.setRequestHeader('apikey', anonKey);
-    xhr.setRequestHeader('x-upsert', 'true');
-    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.open('PUT', uploadUrl);
+    xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
 
     const onAbort = () => {
       xhr.abort();
@@ -240,17 +291,9 @@ async function uploadFileWithProgress(
         if (xhr.responseText) message = xhr.responseText.slice(0, 200);
       }
 
-      console.error('[boards] storage upload failed', { status: xhr.status, message, storagePath, bucket: BUCKET });
+      console.error('[boards] R2 upload failed', { status: xhr.status, message });
       if (isStorageFullError(xhr.status, message)) {
         reject(new Error('Storage is full or the file is too large. Free up space and try again.'));
-        return;
-      }
-      if (/bucket not found/i.test(message)) {
-        reject(
-          new Error(
-            `Storage bucket "${BUCKET}" was not found. Create a public bucket named exactly "board_assets" in Supabase Storage.`
-          )
-        );
         return;
       }
       reject(new Error(message));
@@ -258,7 +301,7 @@ async function uploadFileWithProgress(
 
     xhr.onerror = () => {
       signal?.removeEventListener('abort', onAbort);
-      console.error('[boards] storage upload network error', { storagePath });
+      console.error('[boards] R2 upload network error');
       reject(new Error('Network error during upload'));
     };
 
@@ -271,6 +314,66 @@ async function uploadFileWithProgress(
   });
 }
 
+/** Request a presigned URL, then PUT the file binary straight to Cloudflare R2. */
+async function uploadFileWithProgress(
+  boardId: string,
+  file: File,
+  opts?: {
+    mediaId?: string;
+    fileKey?: string;
+    onProgress?: (progress: UploadProgress) => void;
+    signal?: AbortSignal;
+  }
+): Promise<{ fileKey: string; publicUrl: string; mediaId: string }> {
+  if (opts?.signal?.aborted) throw new UploadCancelledError();
+
+  const signed = await requestPresignedUpload({
+    boardId,
+    fileName: file.name,
+    contentType: file.type || 'application/octet-stream',
+    fileSize: file.size,
+    mediaId: opts?.mediaId,
+    fileKey: opts?.fileKey
+  });
+
+  if (opts?.signal?.aborted) throw new UploadCancelledError();
+
+  await putFileToR2(
+    signed.uploadUrl,
+    file,
+    file.type || 'application/octet-stream',
+    opts?.onProgress,
+    opts?.signal
+  );
+
+  return {
+    fileKey: signed.fileKey,
+    publicUrl: signed.publicUrl,
+    mediaId: signed.mediaId || opts?.mediaId || ''
+  };
+}
+
+async function deleteR2File(fileKey: string, mediaId?: string) {
+  if (!fileKey) return;
+  try {
+    const token = await getAccessToken();
+    const res = await fetch('/api/upload/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ fileKey, mediaId })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      console.warn('[boards] R2 delete failed', payload?.error || res.status);
+    }
+  } catch (err) {
+    console.warn('[boards] R2 delete threw', err);
+  }
+}
+
 function isValidHttpUrl(url: string | null | undefined): url is string {
   if (!url || typeof url !== 'string') return false;
   try {
@@ -281,58 +384,43 @@ function isValidHttpUrl(url: string | null | undefined): url is string {
   }
 }
 
-/** Sync public URL helper — only returns a well-formed http(s) URL. */
-function publicUrl(path: string | null | undefined, bucket: string = BUCKET): string | null {
+/** Sync public URL helper — R2 public CDN / custom domain. */
+function publicUrl(path: string | null | undefined): string | null {
   if (!path || typeof path !== 'string' || !path.trim()) return null;
-  try {
-    const { data } = supabase.storage.from(bucket).getPublicUrl(path.trim());
-    const url = data?.publicUrl || null;
-    if (!isValidHttpUrl(url)) {
-      console.warn('[boards] getPublicUrl returned invalid URL', { path, url, bucket });
-      return null;
-    }
-    return url;
-  } catch (err) {
-    console.error('[boards] getPublicUrl failed', err);
+  const clean = path.trim().replace(/^\/+/, '');
+
+  // Already a full URL (legacy rows or stored public_url reused as path)
+  if (isValidHttpUrl(clean)) return clean.split('?')[0];
+
+  const base = r2PublicBaseUrl();
+  if (!base) {
+    console.warn('[boards] NEXT_PUBLIC_R2_PUBLIC_URL is not set');
     return null;
   }
+  const url = `${base}/${clean}`;
+  if (!isValidHttpUrl(url)) {
+    console.warn('[boards] built invalid R2 public URL', { path: clean, url });
+    return null;
+  }
+  return url;
 }
 
 /**
- * Permanent public URL for an object in board_assets (never signed / never blob).
+ * Permanent public URL for an object in Cloudflare R2 (never signed / never blob).
  */
 export function getBoardAssetPublicUrl(path: string | null | undefined): string | null {
-  return publicUrl(path, BUCKET);
+  return publicUrl(path);
 }
 
 /**
- * Resolve a playable URL for board media. Prefers permanent public board_assets URLs
- * so published boards keep working across devices (signed URLs expire).
+ * Resolve a playable URL for board media. Prefers permanent public R2 URLs
+ * so published boards keep working across devices.
  */
-export async function resolveStorageUrl(
-  path: string | null | undefined,
-  _expiresInSeconds = 60 * 60,
-  bucket: string = BUCKET
-): Promise<string | null> {
+export async function resolveStorageUrl(path: string | null | undefined): Promise<string | null> {
   if (!path || typeof path !== 'string' || !path.trim()) return null;
-  const clean = path.trim();
-
-  const pub = publicUrl(clean, bucket);
+  const pub = publicUrl(path.trim());
   if (pub) return pub;
-
-  // Fallback for private buckets / misconfigured public access
-  try {
-    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(clean, _expiresInSeconds);
-    if (error) {
-      console.error('[boards] createSignedUrl error', { path: clean, bucket, error });
-    } else if (isValidHttpUrl(data?.signedUrl)) {
-      return data!.signedUrl;
-    }
-  } catch (err) {
-    console.error('[boards] createSignedUrl threw', { path: clean, bucket, err });
-  }
-
-  console.warn('[boards] resolveStorageUrl could not build a valid URL for', clean, bucket);
+  console.warn('[boards] resolveStorageUrl could not build a valid URL for', path);
   return null;
 }
 
@@ -610,16 +698,19 @@ export async function addVideoToBoard(
             const v = c === 'x' ? r : (r & 0x3) | 0x8;
             return v.toString(16);
           });
-    const safeName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
-    const storagePath = `${userId}/${boardId}/${mediaId}-${safeName}`;
 
-    await uploadFileWithProgress(storagePath, file, onProgress, signal);
+    const uploaded = await uploadFileWithProgress(boardId, file, {
+      mediaId,
+      onProgress,
+      signal
+    });
     if (signal?.aborted) throw new UploadCancelledError();
 
-    const publicMediaUrl = getBoardAssetPublicUrl(storagePath);
+    const storagePath = uploaded.fileKey;
+    const publicMediaUrl = uploaded.publicUrl || getBoardAssetPublicUrl(storagePath);
     if (!publicMediaUrl) {
       throw new Error(
-        `Uploaded to ${BUCKET} but could not resolve a public URL. Ensure the bucket exists and is public.`
+        'Uploaded to Cloudflare R2 but could not resolve a public URL. Check NEXT_PUBLIC_R2_PUBLIC_URL.'
       );
     }
 
@@ -681,7 +772,7 @@ export async function removeVideoFromBoard(boardId: string, videoId: string) {
   if (error) throw error;
   if (!row) return;
 
-  await supabase.storage.from(BUCKET).remove([row.storage_path]);
+  await deleteR2File(row.storage_path, row.id);
 
   // Clear hero if needed
   await supabase
@@ -707,29 +798,30 @@ export type PlayableMediaSource = {
 
 /**
  * Resolve a playable video/image src for the mood-frame picker.
- * Prefers authenticated blob download (safe for canvas), then signed URL, then public URL.
- * Never throws "Failed to fetch" from a raw public fetch — those are logged and skipped.
+ * Prefers R2 public URL (optionally fetched to blob: for canvas), never Supabase Storage.
  */
 export async function resolvePlayableMediaSource(
   media: Pick<BoardVideo, 'storagePath' | 'url' | 'name' | 'mimeType'>
 ): Promise<PlayableMediaSource> {
+  const publicSrc =
+    (isValidHttpUrl(media.url) ? media.url.split('?')[0] : null) ||
+    getBoardAssetPublicUrl(media.storagePath);
+
   console.log('[mood-frame] resolve source input', {
     name: media.name,
     mimeType: media.mimeType,
     storagePath: media.storagePath || null,
-    publicUrl: media.url || null
+    publicUrl: publicSrc || null
   });
 
-  // 1) Authenticated storage download → blob: URL (best for scrubbing + canvas)
-  if (media.storagePath) {
+  if (publicSrc) {
+    // Prefer blob for canvas / scrubbing when CORS allows fetching from R2
     try {
-      console.log('[mood-frame] storage.download path:', media.storagePath);
-      const { data, error } = await supabase.storage.from(BUCKET).download(media.storagePath);
-      if (error) {
-        console.error('[mood-frame] storage.download error', error);
-      } else if (data) {
-        const src = URL.createObjectURL(data);
-        console.log('[mood-frame] <video> src (blob):', src);
+      const res = await fetch(publicSrc);
+      if (res.ok) {
+        const blob = await res.blob();
+        const src = URL.createObjectURL(blob);
+        console.log('[mood-frame] <video> src (blob from R2):', src);
         return {
           src,
           kind: 'blob',
@@ -737,63 +829,32 @@ export async function resolvePlayableMediaSource(
         };
       }
     } catch (err: any) {
-      console.error('[mood-frame] storage.download threw', {
-        message: err?.message,
-        err,
-        path: media.storagePath
-      });
+      console.warn('[mood-frame] R2 fetch→blob failed, using public URL directly', err?.message);
     }
 
-    // 2) Signed URL (works for private buckets; pass directly to <video>, do not fetch())
-    try {
-      console.log('[mood-frame] createSignedUrl path:', media.storagePath);
-      const { data, error } = await supabase.storage
-        .from(BUCKET)
-        .createSignedUrl(media.storagePath, 60 * 60);
-      if (error) {
-        console.error('[mood-frame] createSignedUrl error', error);
-      } else if (data?.signedUrl) {
-        console.log('[mood-frame] <video> src (signed):', data.signedUrl);
-        return { src: data.signedUrl, kind: 'signed' };
-      }
-    } catch (err: any) {
-      console.error('[mood-frame] createSignedUrl threw', {
-        message: err?.message,
-        err,
-        path: media.storagePath
-      });
-    }
-  }
-
-  // 3) Public URL — pass straight to <video>. Do NOT fetch() it (CORS often fails with "Failed to fetch").
-  if (media.url) {
-    console.log('[mood-frame] <video> src (public, direct):', media.url);
-    return { src: media.url, kind: 'public' };
+    console.log('[mood-frame] <video> src (public, direct):', publicSrc);
+    return { src: publicSrc, kind: 'public' };
   }
 
   throw new Error(
-    `Could not resolve a playable URL for "${media.name || 'media'}". Check that the file exists in bucket "${BUCKET}" and storage policies allow read.`
+    `Could not resolve a playable URL for "${media.name || 'media'}". Check NEXT_PUBLIC_R2_PUBLIC_URL and that the object exists in R2.`
   );
 }
 
 export async function downloadMediaBlob(media: Pick<BoardVideo, 'storagePath' | 'url'>): Promise<Blob | null> {
   try {
-    if (media.storagePath) {
-      console.log('[mood-frame] downloadMediaBlob path:', media.storagePath);
-      const { data, error } = await supabase.storage.from(BUCKET).download(media.storagePath);
-      if (error) {
-        console.error('[mood-frame] downloadMediaBlob storage error', error);
-      } else if (data) {
-        return data;
-      }
-    }
+    const url =
+      (isValidHttpUrl(media.url) ? media.url.split('?')[0] : null) ||
+      getBoardAssetPublicUrl(media.storagePath);
+    if (!url) return null;
 
-    // Avoid fetch(publicUrl) — it commonly throws "Failed to fetch" under CORS.
-    // Callers that need a blob should use storage.download / signed download instead.
-    if (media.url) {
-      console.warn('[mood-frame] downloadMediaBlob skipping public fetch (CORS-safe). url=', media.url);
+    console.log('[mood-frame] downloadMediaBlob url:', url);
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('[mood-frame] downloadMediaBlob fetch failed', res.status);
+      return null;
     }
-    return null;
+    return await res.blob();
   } catch (err: any) {
     console.error('[mood-frame] downloadMediaBlob failed safely', {
       message: err?.message,
@@ -863,54 +924,44 @@ async function normalizeHeroImageBlob(input: Blob): Promise<Blob> {
 }
 
 /**
- * Resolve a permanent public mood-frame URL from board_assets (never blob:/data:).
+ * Resolve a permanent public mood-frame URL from Cloudflare R2 (never blob:/data:).
  */
 export async function resolveHeroFrameDisplayUrl(
   path: string | null | undefined
 ): Promise<string | null> {
   if (!path || !path.trim()) return null;
   const clean = path.trim();
-
-  const pub = publicUrl(clean, BUCKET);
-  if (pub) {
-    try {
-      const head = await fetch(pub, { method: 'HEAD' });
-      if (head.ok) return withCacheBust(pub);
-    } catch {
-      // fall through to download/repair
-    }
-  }
+  const pub = publicUrl(clean);
+  if (!pub) return null;
 
   try {
-    const { data, error } = await supabase.storage.from(BUCKET).download(clean);
-    if (error || !data) {
-      console.error('[boards] resolveHeroFrameDisplayUrl download failed', { error, path: clean });
-      return pub ? withCacheBust(pub) : null;
-    }
+    const head = await fetch(pub, { method: 'HEAD' });
+    if (head.ok) return withCacheBust(pub);
+  } catch {
+    // fall through — still return public URL; CDN may block HEAD
+  }
 
+  // Try to detect / repair legacy base64-stored JPEGs
+  try {
+    const res = await fetch(pub);
+    if (!res.ok) return withCacheBust(pub);
+    const data = await res.blob();
     const normalized = await normalizeHeroImageBlob(data);
     const rawHead = new Uint8Array(await data.slice(0, 4).arrayBuffer());
     if (!isJpegBinary(rawHead)) {
-      try {
-        await supabase.storage.from(BUCKET).upload(clean, normalized, {
-          upsert: true,
-          contentType: normalized.type || 'image/jpeg',
-          cacheControl: '3600'
-        });
-        console.log('[boards] repaired hero frame object at', BUCKET, clean);
-      } catch (repairErr) {
-        console.error('[boards] hero repair upload failed', repairErr);
-      }
+      // Caller should re-save via saveBoardHero; for display use object URL of normalized
+      const objectUrl = URL.createObjectURL(normalized);
+      return objectUrl;
     }
-    return withCacheBust(publicUrl(clean, BUCKET));
   } catch (err) {
     console.error('[boards] resolveHeroFrameDisplayUrl threw', err);
-    return pub ? withCacheBust(pub) : null;
   }
+
+  return withCacheBust(pub);
 }
 
 /**
- * Upload a local blob/data URL (or remote image) into board_assets and return its public URL.
+ * Upload a local blob/data URL (or remote image) into Cloudflare R2 and return its public URL.
  */
 export async function uploadBoardAsset(
   boardId: string,
@@ -936,29 +987,27 @@ export async function uploadBoardAsset(
   blob = await normalizeHeroImageBlob(blob);
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const path = `${userId}/${boardId}/${safeName}`;
+  const contentType = blob.type || 'image/jpeg';
 
-  console.log('[boards] uploadBoardAsset →', { bucket: BUCKET, path, contentType: blob.type });
+  console.log('[boards] uploadBoardAsset → R2', { path, contentType, size: blob.size });
 
-  const { error: uploadErr } = await supabase.storage.from(BUCKET).upload(path, blob, {
-    upsert: true,
-    contentType: blob.type || 'image/jpeg',
-    cacheControl: '3600'
+  const signed = await requestPresignedUpload({
+    boardId,
+    fileName: safeName,
+    contentType,
+    fileSize: blob.size || 1,
+    fileKey: path
   });
-  if (uploadErr) {
-    const msg = uploadErr.message || '';
-    if (/bucket not found/i.test(msg)) {
-      throw new Error(
-        `Storage bucket "${BUCKET}" was not found. Create a public bucket named exactly "board_assets" in Supabase Storage (or set NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET to your bucket name), then re-run supabase/migrate_board_assets.sql.`
-      );
-    }
-    throwIfError(uploadErr, 'uploadBoardAsset');
-  }
 
-  const publicUrlValue = publicUrl(path, BUCKET);
+  await putFileToR2(signed.uploadUrl, blob, contentType);
+
+  const publicUrlValue = signed.publicUrl || publicUrl(path);
   if (!publicUrlValue) {
-    throw new Error(`Uploaded to ${BUCKET} but could not resolve a public URL.`);
+    throw new Error(
+      'Uploaded to Cloudflare R2 but could not resolve a public URL. Check NEXT_PUBLIC_R2_PUBLIC_URL.'
+    );
   }
-  return { path, publicUrl: publicUrlValue };
+  return { path: signed.fileKey || path, publicUrl: publicUrlValue };
 }
 
 export async function saveBoardHero(
@@ -1040,31 +1089,23 @@ export async function getBoardMediaBlob(boardId: string, videoId: string): Promi
   const board = await getBoard(boardId);
   const media = board?.videos.find((v) => v.id === videoId);
   if (!media?.storagePath && !media?.url) return null;
-  const path = media.storagePath;
-  if (path) {
-    const { data, error } = await supabase.storage.from(BUCKET).download(path);
-    if (error || !data) return null;
-    return data;
-  }
-  const res = await fetch(media.url);
-  return res.blob();
+  return downloadMediaBlob(media);
 }
 
 export async function getHeroFrameBlob(boardId: string): Promise<Blob | null> {
   const board = await getBoard(boardId);
-  if (board?.heroFramePath) {
-    const { data, error } = await supabase.storage.from(BUCKET).download(board.heroFramePath);
-    if (!error && data) return normalizeHeroImageBlob(data);
+  const url =
+    (board?.heroFrameUrl && !isLocalMediaUrl(board.heroFrameUrl) ? board.heroFrameUrl.split('?')[0] : null) ||
+    getBoardAssetPublicUrl(board?.heroFramePath);
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return normalizeHeroImageBlob(await res.blob());
+  } catch (err) {
+    console.error('[boards] getHeroFrameBlob fetch failed', err);
+    return null;
   }
-  if (board?.heroFrameUrl && !isLocalMediaUrl(board.heroFrameUrl)) {
-    try {
-      const res = await fetch(board.heroFrameUrl);
-      if (res.ok) return normalizeHeroImageBlob(await res.blob());
-    } catch (err) {
-      console.error('[boards] getHeroFrameBlob fetch failed', err);
-    }
-  }
-  return null;
 }
 
 export async function getBoardByPublicId(publicId: string) {

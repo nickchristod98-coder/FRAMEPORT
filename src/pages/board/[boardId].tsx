@@ -357,7 +357,7 @@ export default function BoardWorkspacePage() {
       }
     } catch (err: any) {
       console.error('[board] upload batch failed', err);
-      setUploadError(err?.message || 'Upload failed. Check Supabase Storage bucket `board_assets` and RLS policies.');
+      setUploadError(err?.message || 'Upload failed. Check Cloudflare R2 credentials and NEXT_PUBLIC_R2_PUBLIC_URL.');
     } finally {
       setAdding(false);
       uploadControllersRef.current.clear();
