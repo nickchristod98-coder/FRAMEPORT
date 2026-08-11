@@ -17,6 +17,31 @@ function safeFileName(name: string) {
   return (name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
+/** Allowed R2 key patterns for an owned board. */
+function isAllowedFileKey(opts: {
+  fileKey: string;
+  userId: string;
+  boardId: string;
+  mediaId?: string | null;
+}) {
+  const key = opts.fileKey;
+  const userBoardPrefix = `${opts.userId}/${opts.boardId}/`;
+  if (key.startsWith(userBoardPrefix)) return true;
+
+  // thumbnails/{mediaId}-thumb.webp
+  const thumbMatch = /^thumbnails\/([a-zA-Z0-9_-]+)-thumb\.webp$/.exec(key);
+  if (thumbMatch) {
+    if (opts.mediaId && thumbMatch[1] !== opts.mediaId) return false;
+    return true;
+  }
+
+  // hero-frames/{boardId}-{timestamp}.jpg
+  const heroPrefix = `hero-frames/${opts.boardId}-`;
+  if (key.startsWith(heroPrefix) && /\.(jpe?g|webp|png)$/i.test(key)) return true;
+
+  return false;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -36,6 +61,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       typeof req.body?.mediaId === 'string' && req.body.mediaId.trim()
         ? req.body.mediaId.trim()
         : null;
+    const skipQuota = req.body?.skipQuota === true || req.body?.purpose === 'thumbnail';
 
     if (!boardId) {
       return res.status(400).json({ error: 'boardId is required' });
@@ -65,7 +91,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const usedBytes = await getUsedBytes(user.id);
     const remaining = Math.max(0, limitBytes - usedBytes);
-    if (fileSize > remaining) {
+    if (!skipQuota && fileSize > remaining) {
       return res.status(403).json({
         error: 'Storage limit reached. Upgrade your plan for more space.',
         usedBytes,
@@ -85,7 +111,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const requestedKey =
       typeof req.body?.fileKey === 'string' ? req.body.fileKey.trim().replace(/^\/+/, '') : '';
     if (requestedKey) {
-      if (!requestedKey.startsWith(prefix)) {
+      if (
+        !isAllowedFileKey({
+          fileKey: requestedKey,
+          userId: user.id,
+          boardId,
+          mediaId: id
+        })
+      ) {
         return res.status(403).json({ error: 'Invalid file key for this board' });
       }
       fileKey = requestedKey;

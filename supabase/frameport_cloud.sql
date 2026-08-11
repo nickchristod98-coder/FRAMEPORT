@@ -17,6 +17,7 @@ create table if not exists public.vision_boards (
   hero_media_id uuid,
   hero_time numeric default 0,
   hero_frame_path text,
+  hero_image_url text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -32,6 +33,8 @@ create table if not exists public.fp_board_media (
   mime_type text,
   storage_path text not null,
   public_url text,
+  original_url text,
+  thumbnail_url text,
   sort_order int not null default 0,
   size bigint,
   created_at timestamptz default now()
@@ -134,3 +137,6 @@ create policy "board_assets_storage_delete" on storage.objects
   );
 
 alter table public.fp_board_media add column if not exists public_url text;
+alter table public.fp_board_media add column if not exists original_url text;
+alter table public.fp_board_media add column if not exists thumbnail_url text;
+alter table public.vision_boards add column if not exists hero_image_url text;

@@ -21,6 +21,23 @@ export function fullResolutionUrl(url: string | null | undefined): string | null
 }
 
 /**
+ * Prefer a stored R2 thumbnail URL; fall back to legacy transform helpers.
+ */
+export function resolveGridThumbnailUrl(opts: {
+  thumbnailUrl?: string | null;
+  originalUrl?: string | null;
+  mimeType?: string | null;
+}): string | null {
+  if (opts.thumbnailUrl && /^https?:\/\//i.test(opts.thumbnailUrl)) {
+    return opts.thumbnailUrl.split('?')[0];
+  }
+  const original = fullResolutionUrl(opts.originalUrl);
+  if (!original) return null;
+  if (opts.mimeType?.startsWith('video/')) return original;
+  return thumbnailUrl(original, { width: 600, quality: 75 }) || original;
+}
+
+/**
  * Lower-res thumbnail URL for grid display.
  * Uses Supabase image transforms when the URL is a Storage public object URL;
  * otherwise appends width/quality query params as a best-effort hint.

@@ -5,14 +5,17 @@ import {
   fullResolutionUrl,
   isImageMime,
   isVideoMime,
-  thumbnailUrl
+  resolveGridThumbnailUrl
 } from '../lib/mediaUrls';
+import BlurUpImage from './BlurUpImage';
 
 export type GalleryMediaItem = {
   id: string;
   name: string;
   mimeType: string;
+  /** Full-resolution / original URL */
   url: string;
+  thumbnailUrl?: string | null;
   size?: number | null;
 };
 
@@ -95,7 +98,7 @@ export default function ProjectMediaGallery({
     setActionError(null);
     setDownloadingId(item.id);
     try {
-      await downloadAsset({ name: item.name, url: item.url });
+      await downloadAsset({ name: item.name, url: fullResolutionUrl(item.url) || item.url });
     } catch (err: any) {
       console.error('[gallery] download failed', err);
       setActionError(err?.message || 'Download failed');
@@ -112,7 +115,10 @@ export default function ProjectMediaGallery({
     setZipPercent(0);
     try {
       await downloadAssetsAsZip(
-        targets.map((item) => ({ name: item.name, url: item.url })),
+        targets.map((item) => ({
+          name: item.name,
+          url: fullResolutionUrl(item.url) || item.url
+        })),
         `${zipBaseName}.zip`,
         (p) => setZipPercent(p.percent)
       );
@@ -187,10 +193,13 @@ export default function ProjectMediaGallery({
             const isImage = isImageMime(item.mimeType);
             const isVideo = isVideoMime(item.mimeType);
             const fullUrl = fullResolutionUrl(item.url) || item.url;
-            const thumb =
-              isImage && !thumbFallback[item.id]
-                ? thumbnailUrl(item.url, { width: 600, quality: 75 }) || fullUrl
-                : fullUrl;
+            const thumb = thumbFallback[item.id]
+              ? fullUrl
+              : resolveGridThumbnailUrl({
+                  thumbnailUrl: item.thumbnailUrl,
+                  originalUrl: item.url,
+                  mimeType: item.mimeType
+                }) || fullUrl;
 
             return (
               <div
@@ -203,14 +212,11 @@ export default function ProjectMediaGallery({
                   className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
                   aria-label={`Open ${item.name}`}
                 >
-                  {isImage ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
+                  {isImage || (isVideo && item.thumbnailUrl && !thumbFallback[item.id]) ? (
+                    <BlurUpImage
                       src={thumb}
                       alt={item.name}
-                      loading="lazy"
-                      decoding="async"
-                      className="block h-auto w-full transition duration-300 group-hover:brightness-110"
+                      className="block h-auto w-full group-hover:brightness-110"
                       onError={() => {
                         setThumbFallback((prev) => ({ ...prev, [item.id]: true }));
                       }}
@@ -228,6 +234,13 @@ export default function ProjectMediaGallery({
                       {item.name}
                     </div>
                   )}
+                  {isVideo ? (
+                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                      <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm">
+                        ▶
+                      </span>
+                    </div>
+                  ) : null}
                 </button>
 
                 <button

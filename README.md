@@ -33,6 +33,7 @@ STRIPE_PRICE_MAX=price_...
    - `supabase/frameport_cloud.sql` (boards, media, auth RLS, publish table)
    - `supabase/migrate_profiles_billing.sql` (profiles + Stripe plan fields)
    - `supabase/migrate_board_password.sql` (optional board access passwords)
+   - `supabase/migrate_thumbnails_hero.sql` (thumbnail_url, original_url, hero_image_url)
 6. Auth → Providers: enable Email. For local testing, you can disable “Confirm email”.
 7. Stripe:
    - Create two recurring Prices in EUR: PRO €20/mo and MAX €50/mo
@@ -59,7 +60,9 @@ Pricing UI: `/pricing`
 
 - **Sign up / Sign in** → Supabase Auth
 - **Boards** → `vision_boards` table (per user)
-- **Videos & images** → Cloudflare R2 (presigned PUT) + metadata rows in `fp_board_media` (`storage_path`, `public_url`, `size`)
+- **Videos & images** → Cloudflare R2 (presigned PUT) + metadata rows in `fp_board_media` (`storage_path`, `original_url` / `public_url`, `thumbnail_url`, `size`)
+- **Thumbnails** → client-generated WebP at `thumbnails/{mediaId}-thumb.webp`
+- **Hero mood frames** → R2 `hero-frames/{boardId}-{timestamp}.jpg` + `vision_boards.hero_image_url`
 - **Published client links** → `published_boards` (+ `/v/[publicId]`)
 - **Subscriptions** → `profiles` (plan_tier, storage_limit_bytes, Stripe IDs)
 

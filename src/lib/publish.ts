@@ -16,7 +16,9 @@ export type PublishedMedia = {
   id: string;
   name: string;
   mimeType: string;
+  /** Full-resolution / original URL */
   url: string;
+  thumbnailUrl?: string | null;
   size?: number | null;
   createdAt?: string | null;
 };
@@ -54,33 +56,37 @@ function isPublicHttpUrl(url: string | null | undefined): url is string {
  * (never blob: or data: which only work on the creating device).
  */
 async function resolvePublishedHeroUrl(board: Board): Promise<string | null> {
-  // 1) Prefer path → public URL from board_assets
+  // 1) Prefer stored hero_image_url / resolved display URL
+  if (isPublicHttpUrl(board.heroFrameUrl) && !isLocalMediaUrl(board.heroFrameUrl)) {
+    return board.heroFrameUrl.split('?')[0];
+  }
+
+  // 2) Prefer path → public URL from R2
   if (board.heroFramePath) {
     const fromPath =
       (await resolveHeroFrameDisplayUrl(board.heroFramePath)) ||
       getBoardAssetPublicUrl(board.heroFramePath);
     if (isPublicHttpUrl(fromPath) && !isLocalMediaUrl(fromPath)) {
-      return fromPath.split('?')[0]; // stable URL without cache-bust for publish payload
+      return fromPath.split('?')[0];
     }
   }
 
-  // 2) Already a public http(s) URL
-  if (isPublicHttpUrl(board.heroFrameUrl) && !isLocalMediaUrl(board.heroFrameUrl)) {
-    return board.heroFrameUrl.split('?')[0];
-  }
-
-  // 3) Local blob/data — upload into board_assets
+  // 3) Local blob/data — upload into hero-frames/
   if (board.heroFrameUrl && isLocalMediaUrl(board.heroFrameUrl)) {
-    const uploaded = await uploadBoardAsset(board.id, board.heroFrameUrl, 'hero-frame.jpg');
+    const uploaded = await uploadBoardAsset(board.id, board.heroFrameUrl, 'hero-frame.jpg', {
+      heroFrame: true
+    });
     if (uploaded?.publicUrl) {
       return uploaded.publicUrl;
     }
   }
 
-  // 4) Download stored hero bytes and upload to board_assets
+  // 4) Download stored hero bytes and upload to R2
   const heroBlob = await getHeroFrameBlob(board.id);
   if (heroBlob) {
-    const uploaded = await uploadBoardAsset(board.id, heroBlob, 'hero-frame.jpg');
+    const uploaded = await uploadBoardAsset(board.id, heroBlob, 'hero-frame.jpg', {
+      heroFrame: true
+    });
     return uploaded.publicUrl;
   }
 
@@ -146,6 +152,7 @@ export async function buildAndPublishSnapshot(boardId: string): Promise<{
         name: v.name,
         mimeType: v.mimeType,
         url,
+        thumbnailUrl: v.thumbnailUrl || null,
         size: v.size ?? null,
         createdAt: v.createdAt ?? null
       });

@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import { DragEvent, useEffect, useRef, useState } from 'react';
 import AccountMenu from '../../components/AccountMenu';
 import AmbientBackground from '../../components/AmbientBackground';
+import BlurUpImage from '../../components/BlurUpImage';
 import HeroFramePicker from '../../components/HeroFramePicker';
 import StickyBoardHeader from '../../components/StickyBoardHeader';
 import UpgradeStorageModal from '../../components/UpgradeStorageModal';
@@ -23,6 +24,7 @@ import {
   UploadCancelledError
 } from '../../lib/boards';
 import { extractRandomHdFrame, isUsableImageSrc, pickRandomVideo } from '../../lib/mediaFrame';
+import { resolveGridThumbnailUrl } from '../../lib/mediaUrls';
 import { buildAndPublishSnapshot } from '../../lib/publish';
 
 type UploadItem = {
@@ -808,20 +810,29 @@ export default function BoardWorkspacePage() {
                   } cursor-grab active:cursor-grabbing`}
                 >
                   <div className="relative bg-black">
-                    {v.url ? (
-                      v.mimeType.startsWith('image/') ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={v.url} alt={v.name} className="block h-auto w-full" />
-                      ) : (
-                        <video
-                          src={v.url}
-                          className="block h-auto w-full"
-                          muted
-                          playsInline
-                          preload="metadata"
-                          controls={false}
-                        />
-                      )
+                    {v.url || v.thumbnailUrl ? (
+                      (() => {
+                        const thumb =
+                          resolveGridThumbnailUrl({
+                            thumbnailUrl: v.thumbnailUrl,
+                            originalUrl: v.url,
+                            mimeType: v.mimeType
+                          }) || v.url;
+                        const isImage = v.mimeType.startsWith('image/');
+                        const showThumbImage = isImage || !!v.thumbnailUrl;
+                        return showThumbImage ? (
+                          <BlurUpImage src={thumb} alt={v.name} className="block h-auto w-full" />
+                        ) : (
+                          <video
+                            src={v.url}
+                            className="block h-auto w-full"
+                            muted
+                            playsInline
+                            preload="metadata"
+                            controls={false}
+                          />
+                        );
+                      })()
                     ) : (
                       <div className="flex aspect-video items-center justify-center text-xs text-white/40">—</div>
                     )}

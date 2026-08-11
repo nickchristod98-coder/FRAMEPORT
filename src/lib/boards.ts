@@ -5,7 +5,9 @@ export type BoardVideo = {
   id: string;
   name: string;
   mimeType: string;
+  /** Full-resolution / original public URL */
   url: string;
+  thumbnailUrl?: string | null;
   storagePath?: string;
   sortOrder?: number;
   size?: number | null;
@@ -53,13 +55,24 @@ const DEFAULT_STORAGE_LIMIT_BYTES = 1024 * 1024 * 1024;
 
 /** Columns returned after board writes — never quote identifiers; PostgREST quotes them itself. */
 const BOARD_SELECT =
-  'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,access_password,created_at,updated_at';
+  'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,hero_image_url,access_password,created_at,updated_at';
 
 const BOARD_SELECT_LEGACY =
   'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,created_at,updated_at';
 
+const BOARD_SELECT_NO_PASSWORD =
+  'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,hero_image_url,created_at,updated_at';
+
 function isMissingAccessPasswordColumn(error: { message?: string } | null) {
   return !!error && /access_password|schema cache|Could not find/i.test(error.message || '');
+}
+
+function isMissingHeroImageUrlColumn(error: { message?: string } | null) {
+  return !!error && /hero_image_url|schema cache|Could not find/i.test(error.message || '');
+}
+
+function isMissingThumbColumns(error: { message?: string } | null) {
+  return !!error && /thumbnail_url|original_url|schema cache|Could not find/i.test(error.message || '');
 }
 
 export type UploadProgress = {
@@ -195,6 +208,8 @@ async function requestPresignedUpload(opts: {
   fileSize: number;
   mediaId?: string;
   fileKey?: string;
+  purpose?: 'media' | 'thumbnail' | 'hero';
+  skipQuota?: boolean;
 }): Promise<PresignedUploadResponse> {
   const token = await getAccessToken();
   const res = await fetch('/api/upload/presigned-url', {
@@ -209,7 +224,9 @@ async function requestPresignedUpload(opts: {
       contentType: opts.contentType,
       fileSize: opts.fileSize,
       mediaId: opts.mediaId,
-      fileKey: opts.fileKey
+      fileKey: opts.fileKey,
+      purpose: opts.purpose,
+      skipQuota: opts.skipQuota === true || opts.purpose === 'thumbnail'
     })
   });
 
@@ -353,7 +370,7 @@ async function uploadFileWithProgress(
   };
 }
 
-async function deleteR2File(fileKey: string, mediaId?: string) {
+async function deleteR2File(fileKey: string, opts?: { mediaId?: string; boardId?: string }) {
   if (!fileKey) return;
   try {
     const token = await getAccessToken();
@@ -363,7 +380,11 @@ async function deleteR2File(fileKey: string, mediaId?: string) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       },
-      body: JSON.stringify({ fileKey, mediaId })
+      body: JSON.stringify({
+        fileKey,
+        mediaId: opts?.mediaId,
+        boardId: opts?.boardId
+      })
     });
     if (!res.ok) {
       const payload = await res.json().catch(() => ({}));
@@ -371,6 +392,20 @@ async function deleteR2File(fileKey: string, mediaId?: string) {
     }
   } catch (err) {
     console.warn('[boards] R2 delete threw', err);
+  }
+}
+
+function r2KeyFromPublicUrl(url: string | null | undefined): string | null {
+  if (!url || !isValidHttpUrl(url)) return null;
+  const base = r2PublicBaseUrl();
+  if (!base) return null;
+  try {
+    const parsed = new URL(url.split('?')[0]);
+    const baseParsed = new URL(base);
+    if (parsed.origin !== baseParsed.origin) return null;
+    return parsed.pathname.replace(/^\/+/, '') || null;
+  } catch {
+    return null;
   }
 }
 
@@ -436,6 +471,10 @@ function withCacheBust(url: string | null | undefined): string | null {
 }
 
 function mapBoardRow(row: any, videos: BoardVideo[] = [], heroFrameUrl: string | null = null): Board {
+  const storedHeroUrl =
+    typeof row.hero_image_url === 'string' && isValidHttpUrl(row.hero_image_url)
+      ? row.hero_image_url.split('?')[0]
+      : null;
   return {
     id: row.id,
     title: row.title,
@@ -449,7 +488,7 @@ function mapBoardRow(row: any, videos: BoardVideo[] = [], heroFrameUrl: string |
       ? { mediaId: row.hero_media_id, time: Number(row.hero_time || 0) }
       : null,
     videos,
-    heroFrameUrl,
+    heroFrameUrl: heroFrameUrl || storedHeroUrl,
     heroFramePath: row.hero_frame_path || null,
     accessPassword: row.access_password ?? null
   };
@@ -469,7 +508,7 @@ export async function listBoards(): Promise<Omit<Board, 'videos' | 'heroFrameUrl
     .eq('creator_id', userId)
     .order('created_at', { ascending: false });
 
-  if (isMissingAccessPasswordColumn(error)) {
+  if (isMissingAccessPasswordColumn(error) || isMissingHeroImageUrlColumn(error)) {
     const legacy = await supabase
       .from('vision_boards')
       .select(BOARD_SELECT_LEGACY)
@@ -513,15 +552,13 @@ export async function createBoard(input: {
       .select(BOARD_SELECT)
       .single();
 
-    // Older schemas may not have access_password yet — retry without it
-    if (error && /access_password|schema cache|Could not find/i.test(error.message || '')) {
+    // Older schemas may not have access_password / hero_image_url yet — retry without them
+    if (error && /access_password|hero_image_url|schema cache|Could not find/i.test(error.message || '')) {
       delete payload.access_password;
       const retry = await supabase
         .from('vision_boards')
         .insert(payload)
-        .select(
-          'id,creator_id,title,client_name,company_name,logline,public_id,published_at,hero_media_id,hero_time,hero_frame_path,created_at,updated_at'
-        )
+        .select(BOARD_SELECT_LEGACY)
         .single();
       throwIfError(retry.error, 'createBoard');
       if (!retry.data) throw new Error('Board was created but no row was returned.');
@@ -546,7 +583,7 @@ export async function getBoard(id: string): Promise<Board | null> {
     .eq('creator_id', userId)
     .maybeSingle();
 
-  if (isMissingAccessPasswordColumn(error)) {
+  if (isMissingAccessPasswordColumn(error) || isMissingHeroImageUrlColumn(error)) {
     const legacy = await supabase
       .from('vision_boards')
       .select(BOARD_SELECT_LEGACY)
@@ -570,13 +607,22 @@ export async function getBoard(id: string): Promise<Board | null> {
 
   const videos: BoardVideo[] = await Promise.all(
     (mediaRows || []).map(async (m: any) => {
-      const storedPublic =
-        typeof m.public_url === 'string' && isValidHttpUrl(m.public_url) ? m.public_url.split('?')[0] : null;
+      const original =
+        (typeof m.original_url === 'string' && isValidHttpUrl(m.original_url)
+          ? m.original_url.split('?')[0]
+          : null) ||
+        (typeof m.public_url === 'string' && isValidHttpUrl(m.public_url)
+          ? m.public_url.split('?')[0]
+          : null);
       const url =
-        storedPublic ||
+        original ||
         getBoardAssetPublicUrl(m.storage_path) ||
         (await resolveStorageUrl(m.storage_path)) ||
         '';
+      const thumb =
+        typeof m.thumbnail_url === 'string' && isValidHttpUrl(m.thumbnail_url)
+          ? m.thumbnail_url.split('?')[0]
+          : null;
       return {
         id: m.id,
         name: m.filename,
@@ -585,12 +631,18 @@ export async function getBoard(id: string): Promise<Board | null> {
         sortOrder: m.sort_order,
         size: typeof m.size === 'number' ? m.size : Number(m.size) || null,
         createdAt: m.created_at || null,
-        url
+        url,
+        thumbnailUrl: thumb
       };
     })
   );
 
-  const heroFrameUrl = await resolveHeroFrameDisplayUrl(row.hero_frame_path);
+  const heroFromDb =
+    typeof (row as any).hero_image_url === 'string' && isValidHttpUrl((row as any).hero_image_url)
+      ? (row as any).hero_image_url.split('?')[0]
+      : null;
+  const heroFrameUrl =
+    heroFromDb || (await resolveHeroFrameDisplayUrl(row.hero_frame_path));
   return mapBoardRow(row, videos, heroFrameUrl);
 }
 
@@ -699,6 +751,20 @@ export async function addVideoToBoard(
             return v.toString(16);
           });
 
+    // Generate lightweight WebP thumbnail before upload (non-fatal if it fails)
+    let thumbFile: File | null = null;
+    let thumbKey: string | null = null;
+    try {
+      const { generateMediaThumbnail, thumbnailObjectKey } = await import('./thumbnails');
+      const generated = await generateMediaThumbnail(file);
+      if (generated?.file) {
+        thumbFile = generated.file;
+        thumbKey = thumbnailObjectKey(mediaId);
+      }
+    } catch (err) {
+      console.warn('[boards] thumbnail generation skipped', err);
+    }
+
     const uploaded = await uploadFileWithProgress(boardId, file, {
       mediaId,
       onProgress,
@@ -707,11 +773,31 @@ export async function addVideoToBoard(
     if (signal?.aborted) throw new UploadCancelledError();
 
     const storagePath = uploaded.fileKey;
-    const publicMediaUrl = uploaded.publicUrl || getBoardAssetPublicUrl(storagePath);
-    if (!publicMediaUrl) {
+    const originalUrl = uploaded.publicUrl || getBoardAssetPublicUrl(storagePath);
+    if (!originalUrl) {
       throw new Error(
         'Uploaded to Cloudflare R2 but could not resolve a public URL. Check NEXT_PUBLIC_R2_PUBLIC_URL.'
       );
+    }
+
+    let thumbnailUrl: string | null = null;
+    if (thumbFile && thumbKey) {
+      try {
+        const thumbSigned = await requestPresignedUpload({
+          boardId,
+          fileName: 'thumb.webp',
+          contentType: 'image/webp',
+          fileSize: thumbFile.size || 1,
+          mediaId,
+          fileKey: thumbKey,
+          purpose: 'thumbnail',
+          skipQuota: true
+        });
+        await putFileToR2(thumbSigned.uploadUrl, thumbFile, 'image/webp', undefined, signal);
+        thumbnailUrl = thumbSigned.publicUrl || getBoardAssetPublicUrl(thumbKey);
+      } catch (err) {
+        console.warn('[boards] thumbnail upload failed', err);
+      }
     }
 
     const baseRow = {
@@ -725,11 +811,27 @@ export async function addVideoToBoard(
       size: file.size
     };
 
+    const richRow = {
+      ...baseRow,
+      public_url: originalUrl,
+      original_url: originalUrl,
+      thumbnail_url: thumbnailUrl
+    };
+
     let { data: row, error } = await supabase
       .from('fp_board_media')
-      .insert([{ ...baseRow, public_url: publicMediaUrl }])
+      .insert([richRow])
       .select('*')
       .single();
+
+    // Schema may not have thumbnail_url / original_url yet
+    if (error && isMissingThumbColumns(error)) {
+      ({ data: row, error } = await supabase
+        .from('fp_board_media')
+        .insert([{ ...baseRow, public_url: originalUrl }])
+        .select('*')
+        .single());
+    }
 
     // Older schemas may not have public_url yet — retry without it
     if (error && /public_url|schema cache|Could not find/i.test(error.message || '')) {
@@ -749,7 +851,11 @@ export async function addVideoToBoard(
       sortOrder: row.sort_order,
       size: typeof row.size === 'number' ? row.size : Number(row.size) || file.size,
       createdAt: row.created_at || null,
-      url: (typeof row.public_url === 'string' && row.public_url) || publicMediaUrl
+      url: (typeof row.original_url === 'string' && row.original_url) ||
+        (typeof row.public_url === 'string' && row.public_url) ||
+        originalUrl,
+      thumbnailUrl:
+        (typeof row.thumbnail_url === 'string' && row.thumbnail_url) || thumbnailUrl || null
     };
   } catch (err) {
     if (err instanceof UploadCancelledError || (err as any)?.name === 'UploadCancelledError') {
@@ -772,15 +878,38 @@ export async function removeVideoFromBoard(boardId: string, videoId: string) {
   if (error) throw error;
   if (!row) return;
 
-  await deleteR2File(row.storage_path, row.id);
+  await deleteR2File(row.storage_path, { mediaId: row.id, boardId });
+  const thumbKey =
+    r2KeyFromPublicUrl(row.thumbnail_url) ||
+    (row.id ? `thumbnails/${row.id}-thumb.webp` : null);
+  if (thumbKey) {
+    await deleteR2File(thumbKey, { mediaId: row.id, boardId });
+  }
 
   // Clear hero if needed
-  await supabase
-    .from('vision_boards')
-    .update({ hero_media_id: null, hero_frame_path: null, hero_time: 0 })
-    .eq('id', boardId)
-    .eq('creator_id', userId)
-    .eq('hero_media_id', videoId);
+  {
+    const heroPatch: Record<string, any> = {
+      hero_media_id: null,
+      hero_frame_path: null,
+      hero_image_url: null,
+      hero_time: 0
+    };
+    let { error: heroErr } = await supabase
+      .from('vision_boards')
+      .update(heroPatch)
+      .eq('id', boardId)
+      .eq('creator_id', userId)
+      .eq('hero_media_id', videoId);
+    if (heroErr && isMissingHeroImageUrlColumn(heroErr)) {
+      delete heroPatch.hero_image_url;
+      await supabase
+        .from('vision_boards')
+        .update(heroPatch)
+        .eq('id', boardId)
+        .eq('creator_id', userId)
+        .eq('hero_media_id', videoId);
+    }
+  }
 
   const { error: delErr } = await supabase
     .from('fp_board_media')
@@ -925,12 +1054,18 @@ async function normalizeHeroImageBlob(input: Blob): Promise<Blob> {
 
 /**
  * Resolve a permanent public mood-frame URL from Cloudflare R2 (never blob:/data:).
+ * Prefers a stored hero_image_url when provided as path-or-url.
  */
 export async function resolveHeroFrameDisplayUrl(
-  path: string | null | undefined
+  pathOrUrl: string | null | undefined
 ): Promise<string | null> {
-  if (!path || !path.trim()) return null;
-  const clean = path.trim();
+  if (!pathOrUrl || !pathOrUrl.trim()) return null;
+  const clean = pathOrUrl.trim();
+
+  if (isValidHttpUrl(clean)) {
+    return withCacheBust(clean.split('?')[0]);
+  }
+
   const pub = publicUrl(clean);
   if (!pub) return null;
 
@@ -949,7 +1084,6 @@ export async function resolveHeroFrameDisplayUrl(
     const normalized = await normalizeHeroImageBlob(data);
     const rawHead = new Uint8Array(await data.slice(0, 4).arrayBuffer());
     if (!isJpegBinary(rawHead)) {
-      // Caller should re-save via saveBoardHero; for display use object URL of normalized
       const objectUrl = URL.createObjectURL(normalized);
       return objectUrl;
     }
@@ -962,13 +1096,15 @@ export async function resolveHeroFrameDisplayUrl(
 
 /**
  * Upload a local blob/data URL (or remote image) into Cloudflare R2 and return its public URL.
+ * Hero mood frames use `hero-frames/{boardId}-{timestamp}.jpg`.
  */
 export async function uploadBoardAsset(
   boardId: string,
   source: string | Blob,
-  fileName = 'hero-frame.jpg'
+  fileName = 'hero-frame.jpg',
+  opts?: { heroFrame?: boolean }
 ): Promise<{ path: string; publicUrl: string }> {
-  const userId = await requireUserId();
+  await requireUserId();
   let blob: Blob;
   if (typeof source === 'string') {
     if (source.startsWith('data:')) {
@@ -986,7 +1122,15 @@ export async function uploadBoardAsset(
 
   blob = await normalizeHeroImageBlob(blob);
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const path = `${userId}/${boardId}/${safeName}`;
+  const isHero = opts?.heroFrame !== false && /hero-frame/i.test(safeName);
+  let path: string;
+  if (isHero) {
+    const { heroFrameObjectKey } = await import('./thumbnails');
+    path = heroFrameObjectKey(boardId);
+  } else {
+    const userId = await requireUserId();
+    path = `${userId}/${boardId}/${safeName}`;
+  }
   const contentType = blob.type || 'image/jpeg';
 
   console.log('[boards] uploadBoardAsset → R2', { path, contentType, size: blob.size });
@@ -996,7 +1140,9 @@ export async function uploadBoardAsset(
     fileName: safeName,
     contentType,
     fileSize: blob.size || 1,
-    fileKey: path
+    fileKey: path,
+    purpose: isHero ? 'hero' : 'media',
+    skipQuota: isHero
   });
 
   await putFileToR2(signed.uploadUrl, blob, contentType);
@@ -1020,19 +1166,32 @@ export async function saveBoardHero(
     const { path, publicUrl: publicHeroUrl } = await uploadBoardAsset(
       boardId,
       frameDataUrl,
-      'hero-frame.jpg'
+      'hero-frame.jpg',
+      { heroFrame: true }
     );
 
-    const { error } = await supabase
+    const patch: Record<string, any> = {
+      hero_media_id: hero.mediaId,
+      hero_time: hero.time,
+      hero_frame_path: path,
+      hero_image_url: publicHeroUrl,
+      updated_at: new Date().toISOString()
+    };
+
+    let { error } = await supabase
       .from('vision_boards')
-      .update({
-        hero_media_id: hero.mediaId,
-        hero_time: hero.time,
-        hero_frame_path: path,
-        updated_at: new Date().toISOString()
-      })
+      .update(patch)
       .eq('id', boardId)
       .eq('creator_id', userId);
+
+    if (error && isMissingHeroImageUrlColumn(error)) {
+      delete patch.hero_image_url;
+      ({ error } = await supabase
+        .from('vision_boards')
+        .update(patch)
+        .eq('id', boardId)
+        .eq('creator_id', userId));
+    }
     throwIfError(error, 'saveBoardHero.update');
 
     // Always return a permanent public URL (never blob:/data:)
@@ -1045,11 +1204,25 @@ export async function saveBoardHero(
 
 export async function clearBoardHero(boardId: string) {
   const userId = await requireUserId();
-  const { error } = await supabase
+  const patch: Record<string, any> = {
+    hero_media_id: null,
+    hero_time: 0,
+    hero_frame_path: null,
+    hero_image_url: null
+  };
+  let { error } = await supabase
     .from('vision_boards')
-    .update({ hero_media_id: null, hero_time: 0, hero_frame_path: null })
+    .update(patch)
     .eq('id', boardId)
     .eq('creator_id', userId);
+  if (error && isMissingHeroImageUrlColumn(error)) {
+    delete patch.hero_image_url;
+    ({ error } = await supabase
+      .from('vision_boards')
+      .update(patch)
+      .eq('id', boardId)
+      .eq('creator_id', userId));
+  }
   if (error) throw error;
 }
 
